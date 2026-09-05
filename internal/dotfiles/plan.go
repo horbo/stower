@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/kamilhorbowicz/stower/internal/config"
+	"github.com/horbo/stower/internal/config"
 )
 
 type Staging map[string]string

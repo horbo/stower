@@ -10,6 +10,14 @@ plan in the main panel. Nothing is moved yet.
 
 M2.
 
+M2 built `main/package.go` (package `mainpanel`) as the only main-panel context; `syncMain`
+in `app.go` always shows the highlighted package regardless of which side panel has focus,
+because Home/Staged/Issues had no context yet. This milestone must make the main panel follow
+the focused side panel per DESIGN.md "Main panel contexts": Home focused shows `main/homeentry.go`
+for the highlighted tree node, Staged focused shows `main/stagedplan.go`, Packages focused keeps
+showing `main/package.go`. Route the choice in `app.go`'s `syncMain`/`focusedPanel` by `m.focus`,
+not by which panel last had a selection.
+
 ## Scope
 
 - `components/tree.go`: lazy-loading tree over a `Loader func(path) ([]Node, error)`, cursor,

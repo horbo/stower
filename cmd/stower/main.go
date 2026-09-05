@@ -7,7 +7,10 @@ import (
 	"io"
 	"os"
 
-	"github.com/kamilhorbowicz/stower/internal/config"
+	tea "charm.land/bubbletea/v2"
+
+	"github.com/horbo/stower/internal/config"
+	"github.com/horbo/stower/internal/tui"
 )
 
 var version = "dev"
@@ -38,13 +41,16 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 
-	if _, err := config.Resolve(*dotfiles, *target, os.Getenv); err != nil {
+	paths, err := config.Resolve(*dotfiles, *target, os.Getenv)
+	if err != nil {
 		return err
 	}
-	if _, _, err := config.StowBinary(); err != nil {
+	_, stowVersion, err := config.StowBinary()
+	if err != nil {
 		return err
 	}
 
-	fmt.Fprintln(stderr, "stower: TUI not implemented yet")
-	return nil
+	program := tea.NewProgram(tui.New(paths, stowVersion), tea.WithOutput(stdout))
+	_, err = program.Run()
+	return err
 }

@@ -11,7 +11,9 @@ Nothing. Go is already installed by the coordinator (`brew install go`).
 
 ## Scope
 
-- `go.mod` with module path `github.com/kamilhorbowicz/stower`, Go version matching the
+- `go.mod` with module path `github.com/kamilhorbowicz/stower` (renamed to
+  `github.com/horbo/stower` during the M2 review once the GitHub repository path was decided;
+  M0's own commit still uses the original path). Go version matching the
   installed toolchain.
 - Dependencies: `charmbracelet/bubbletea`, `charmbracelet/bubbles`, `charmbracelet/lipgloss`.
   Use the major versions named in `Notes`. Pin exact versions in `go.mod`; run `go mod tidy`.

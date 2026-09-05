@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/kamilhorbowicz/stower/internal/config"
+	"github.com/horbo/stower/internal/config"
 )
 
 type State int

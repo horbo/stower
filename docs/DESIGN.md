@@ -7,7 +7,7 @@ entries replaced by the `dot-` prefix.
 
 Terminology used throughout: **target** is the directory stow links into (normally `$HOME`),
 **dotfiles** is the repository directory (normally `~/dotfiles`), **package** is a top-level
-directory inside dotfiles.
+directory inside dotfiles. The Go module is `github.com/horbo/stower`.
 
 ## Domain rules
 

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/kamilhorbowicz/stower/internal/config"
+	"github.com/horbo/stower/internal/config"
 )
 
 func newPaths(t *testing.T) config.Paths {

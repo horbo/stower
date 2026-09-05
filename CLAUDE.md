@@ -34,6 +34,12 @@ and link them back with stow, restore them, inspect link health, commit to git.
 - Validate external input (paths, package names). Never interpolate untrusted values into
   a shell string; use `exec.Command` with argument slices.
 
+## Module path
+
+The module is `github.com/horbo/stower` (GitHub repository `horbo/stower`). M0's commit
+used `github.com/kamilhorbowicz/stower`; it was renamed during the M2 review. Always use
+`github.com/horbo/stower/...` in new code.
+
 ## Layout
 
 ```

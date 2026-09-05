@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kamilhorbowicz/stower/internal/config"
-	"github.com/kamilhorbowicz/stower/internal/stow"
+	"github.com/horbo/stower/internal/config"
+	"github.com/horbo/stower/internal/stow"
 )
 
 func requireStow(t *testing.T) {

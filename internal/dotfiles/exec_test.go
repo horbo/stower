@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/kamilhorbowicz/stower/internal/stow"
+	"github.com/horbo/stower/internal/stow"
 )
 
 type fakeRunner struct {

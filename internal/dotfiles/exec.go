@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/kamilhorbowicz/stower/internal/stow"
+	"github.com/horbo/stower/internal/stow"
 )
 
 type EventKind int
