@@ -300,6 +300,9 @@ Operation flow: Confirm → main becomes Log → Commit popup → every panel re
 - Popups: the root model holds an optional popup that captures keys. Background dimming uses
   lipgloss v2 layer composition; if the pinned v2 API turns out not to support it cleanly,
   popups render without dimming and the milestone report says so.
+- Module paths are `charm.land/{bubbletea,bubbles,lipgloss}/v2` (pinned in M0: v2.0.9,
+  v2.2.1, v2.0.6). `github.com/charmbracelet/x/ansi` is already in the dependency closure and
+  may be imported for `ansi.Truncate` and width measurement.
 - Text truncation and wrapping to width is done explicitly (`ansi.Truncate` from
   `charmbracelet/x/ansi` or an equivalent already pulled in by the pinned dependencies).
 - `layout.go` exposes pure functions `(W, H, focus, mode) → rectangles`, table-tested at

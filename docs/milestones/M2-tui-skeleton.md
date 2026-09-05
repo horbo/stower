@@ -78,6 +78,10 @@ context lists `dot-bar → <target>/.bar  unlinked`.
 
 ## Notes
 
+- Import the Charm modules as `charm.land/bubbletea/v2`, `charm.land/bubbles/v2`,
+  `charm.land/lipgloss/v2`; see `go.mod`. Bubble Tea v2: `View() tea.View`, `tea.KeyPressMsg`.
+- Replace the placeholder `internal/tui/app.go` from M0 entirely.
+
 - Record whether the pinned lipgloss major supports layer composition for dimmed popup
   backgrounds; if not, popups will render without dimming from M3 on.
 - Report any bubbles component that does not fit (for example `table` column sizing) and

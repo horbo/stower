@@ -7,9 +7,12 @@ and link them back with stow, restore them, inspect link health, commit to git.
 ## Stack
 
 - Go, latest stable from Homebrew. Single static binary.
-- `charmbracelet/bubbletea`, `charmbracelet/bubbles`, `charmbracelet/lipgloss`.
-  Versions are pinned in `go.mod` by M0; do not add any other third-party dependency
-  without asking.
+- Bubble Tea v2, Bubbles v2, Lip Gloss v2. Their canonical module paths are
+  `charm.land/bubbletea/v2`, `charm.land/bubbles/v2`, `charm.land/lipgloss/v2` (not
+  `github.com/charmbracelet/...`); versions are pinned in `go.mod`. Do not add any other
+  third-party dependency without asking.
+- Bubble Tea v2 API notes: `View() tea.View` (build with `tea.NewView(s)`), key presses arrive
+  as `tea.KeyPressMsg`, `key.Matches` is generic over `fmt.Stringer`.
 - GNU Stow >= 2.4 is the linking backend, invoked as a subprocess. stower never creates
   or removes symlinks itself.
 - git is invoked as a subprocess.
