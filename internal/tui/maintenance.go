@@ -27,6 +27,7 @@ func (m *Model) openRestore() tea.Cmd {
 	if !ok {
 		return nil
 	}
+	m.restoreEntries = nil
 	m.restorePlan = doctor.BuildRestorePlan(m.paths, selected.Name)
 	m.mainRestore.SetPlan(m.restorePlan)
 	m.restoreOpen = true
@@ -35,8 +36,30 @@ func (m *Model) openRestore() tea.Cmd {
 	return nil
 }
 
+func (m *Model) openEntryRestore() tea.Cmd {
+	selected, ok := m.packages.Selected()
+	if !ok {
+		return nil
+	}
+	entries := m.mainPkg.Marked()
+	if len(entries) == 0 {
+		issue, ok := m.mainPkg.SelectedIssue()
+		if !ok {
+			return nil
+		}
+		entries = []string{issue.Entry.PkgRel}
+	}
+	m.restoreEntries = entries
+	m.restorePlan = doctor.BuildEntryRestorePlan(m.paths, selected.Name, entries)
+	m.mainRestore.SetPlan(m.restorePlan)
+	m.restoreOpen = true
+	m.mainFocused = true
+	m.relayout()
+	return nil
+}
+
 func (m *Model) confirmRestore() tea.Cmd {
-	m.restorePlan = doctor.BuildRestorePlan(m.paths, m.restorePlan.Package)
+	m.restorePlan = doctor.BuildEntryRestorePlan(m.paths, m.restorePlan.Package, m.restoreEntries)
 	m.mainRestore.SetPlan(m.restorePlan)
 	if m.restorePlan.Fatal != nil {
 		m.showError("Cannot restore", m.restorePlan.Fatal)
@@ -45,10 +68,32 @@ func (m *Model) confirmRestore() tea.Cmd {
 	if !m.restorePlan.Runnable() {
 		return m.setFlash("restore blocked or empty; fix conflicting entries in Issues first")
 	}
-	m.confirmPopup.Open(actionRestore, "Restore "+m.restorePlan.Package, []string{"Move " + plural(len(m.restorePlan.Moves), "entry", "entries") + " back into the target?", "Remove the empty package directory."}, "stage the files again")
+	m.confirmPopup.Open(actionRestore, m.restoreTitle(), m.restoreBody(), "stage the files again")
 	m.popup = popupConfirm
 	m.relayout()
 	return nil
+}
+
+func (m Model) restoreTitle() string {
+	if m.restoreEntries == nil {
+		return "Restore " + m.restorePlan.Package
+	}
+	return "Restore " + plural(len(m.restorePlan.Selected), "entry", "entries") + " from " + m.restorePlan.Package
+}
+
+func (m Model) restoreBody() []string {
+	plan := m.restorePlan
+	body := []string{"Move " + plural(len(plan.Moves), "entry", "entries") + " back into the target?"}
+	if m.restoreEntries != nil {
+		for _, rel := range plan.Selected {
+			body = append(body, "  "+plan.Package+"/"+rel)
+		}
+	}
+	if plan.Partial() {
+		body = append(body, "Keep "+plural(len(plan.Entries)-len(plan.Selected), "entry", "entries")+" linked and keep the package directory.")
+		return body
+	}
+	return append(body, "Remove the empty package directory.")
 }
 
 func (m *Model) selectedIssue() (doctor.Issue, bool) {
@@ -104,7 +149,7 @@ func (m *Model) startConfirmed(action string) tea.Cmd {
 	case actionApply:
 		return m.startExecution()
 	case actionRestore:
-		plan := doctor.BuildRestorePlan(paths, m.restorePlan.Package)
+		plan := doctor.BuildEntryRestorePlan(paths, m.restorePlan.Package, m.restoreEntries)
 		if !plan.Runnable() {
 			m.showError("Cannot restore", fmt.Errorf("restore plan changed or is blocked; inspect Issues"))
 			return nil

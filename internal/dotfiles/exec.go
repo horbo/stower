@@ -55,6 +55,7 @@ type Runner interface {
 	DryRunRestow(pkg string) stow.Result
 	Restow(pkgs ...string) stow.Result
 	Unstow(pkg string) stow.Result
+	RestowExcluding(pkg string, entries []string) stow.Result
 }
 
 type PackageFailure struct {
@@ -291,6 +292,19 @@ func restorePackage(ctx context.Context, plan RestorePlan, runner Runner, em emi
 	if err := ctx.Err(); err != nil {
 		return fail("restore cancelled", err)
 	}
+
+	if plan.Partial() {
+		step = "stow restow without the restored entries"
+		em.send(Event{Kind: StepStarted, Package: pkg, Message: step})
+		result := runner.RestowExcluding(pkg, plan.Selected)
+		em.result(pkg, result)
+		if result.Err != nil {
+			return fail(step, result.Err)
+		}
+		em.send(Event{Kind: StepDone, Package: pkg, Message: step})
+		return nil
+	}
+
 	step = "remove " + plan.RemoveDir
 	em.send(Event{Kind: StepStarted, Package: pkg, Message: step})
 	removeEmptyTree(plan.RemoveDir)

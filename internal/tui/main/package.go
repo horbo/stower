@@ -18,6 +18,7 @@ import (
 const (
 	columnGap = 2
 	minColumn = 8
+	markWidth = 2
 )
 
 type Package struct {
@@ -26,6 +27,7 @@ type Package struct {
 	name    string
 	entries []dotfiles.Entry
 	reports []doctor.Issue
+	marked  map[string]bool
 	cursor  int
 	err     error
 	loaded  bool
@@ -47,6 +49,7 @@ func (p *Package) SetPackage(name string, entries []dotfiles.Entry, err error) {
 	}
 	p.name = name
 	p.reports = nil
+	p.marked = nil
 	p.cursor = 0
 	p.entries = entries
 	p.err = err
@@ -121,11 +124,39 @@ func (p *Package) Counter() string {
 
 func (p *Package) Keys() []key.Binding {
 	return []key.Binding{
+		key.NewBinding(key.WithKeys("space"), key.WithHelp("space", "mark entry")),
+		key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "restore entries")),
 		key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "fix")),
 		key.NewBinding(key.WithKeys("D"), key.WithHelp("D", "diff")),
 		key.NewBinding(key.WithKeys("j", "k"), key.WithHelp("j/k", "select entry")),
 		key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
 	}
+}
+
+func (p *Package) ToggleMark() {
+	if p.cursor < 0 || p.cursor >= len(p.entries) {
+		return
+	}
+	rel := p.entries[p.cursor].PkgRel
+	if p.marked == nil {
+		p.marked = map[string]bool{}
+	}
+	if p.marked[rel] {
+		delete(p.marked, rel)
+	} else {
+		p.marked[rel] = true
+	}
+	p.render()
+}
+
+func (p *Package) Marked() []string {
+	marked := make([]string, 0, len(p.marked))
+	for _, entry := range p.entries {
+		if p.marked[entry.PkgRel] {
+			marked = append(marked, entry.PkgRel)
+		}
+	}
+	return marked
 }
 
 func (p *Package) render() {
@@ -167,10 +198,10 @@ func (p *Package) lines() []string {
 		targetWidth = max(targetWidth, components.Width(targets[i]))
 	}
 
-	free := p.width - stateWidth - 2*columnGap
+	free := p.width - markWidth - stateWidth - 2*columnGap
 	if free < 2*minColumn {
 		stateWidth = max(1, p.width/4)
-		free = p.width - stateWidth - 2*columnGap
+		free = p.width - markWidth - stateWidth - 2*columnGap
 	}
 	if free < 2 {
 		free = 2
@@ -184,11 +215,11 @@ func (p *Package) lines() []string {
 	targetWidth = max(1, free-entryWidth)
 
 	lines := make([]string, 0, len(p.entries)+3)
-	header := components.Fit("ENTRY", entryWidth) + strings.Repeat(" ", columnGap) +
+	header := strings.Repeat(" ", markWidth) + components.Fit("ENTRY", entryWidth) + strings.Repeat(" ", columnGap) +
 		components.Fit("TARGET", targetWidth) + strings.Repeat(" ", columnGap) + "STATE"
 	lines = append(lines, p.st.Header.Render(components.Fit(header, p.width)))
 	for i, entry := range p.entries {
-		line := row(entryWidth, targetWidth, stateWidth, entryName(entry), targets[i], states[i])
+		line := mark(p.marked[entry.PkgRel]) + row(entryWidth, targetWidth, stateWidth, entryName(entry), targets[i], states[i])
 		if i == p.cursor {
 			lines = append(lines, p.st.Selected.Render(components.Fit(line, p.width)))
 		} else {
@@ -223,7 +254,7 @@ func (p *Package) summary() string {
 				parts = append(parts, fmt.Sprintf("%d %s", counts[state], state))
 			}
 		}
-		return strings.Join(parts, "  ")
+		return strings.Join(p.withMarks(parts), "  ")
 	}
 
 	var linked, unlinked, conflict int
@@ -244,7 +275,14 @@ func (p *Package) summary() string {
 	if conflict > 0 {
 		parts = append(parts, fmt.Sprintf("%d conflict", conflict))
 	}
-	return strings.Join(parts, "  ")
+	return strings.Join(p.withMarks(parts), "  ")
+}
+
+func (p *Package) withMarks(parts []string) []string {
+	if len(p.marked) == 0 {
+		return parts
+	}
+	return append(parts, fmt.Sprintf("%d marked", len(p.marked)))
 }
 
 func plural(n int, singular, many string) string {
@@ -270,6 +308,13 @@ func stateGlyph(state dotfiles.State) string {
 	default:
 		return "⚠"
 	}
+}
+
+func mark(marked bool) string {
+	if marked {
+		return "✓ "
+	}
+	return strings.Repeat(" ", markWidth)
 }
 
 func row(entryWidth, targetWidth, stateWidth int, entry, target, state string) string {

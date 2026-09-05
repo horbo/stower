@@ -9,6 +9,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/horbo/stower/internal/doctor"
 	"github.com/horbo/stower/internal/dotfiles"
 	"github.com/horbo/stower/internal/stow"
@@ -69,6 +71,111 @@ func TestRestoreUI(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(m.mainLog.Lines(), "\n"), "restored: misc") {
 		t.Fatal(m.mainLog.Lines())
+	}
+}
+
+func focusPackage(t *testing.T, m Model, name string) Model {
+	t.Helper()
+	m = press(t, m, "esc", "1").(Model)
+	for i := 0; i < len(m.pkgs); i++ {
+		selected, _ := m.packages.Selected()
+		if selected.Name == name {
+			return press(t, m, "enter").(Model)
+		}
+		m = press(t, m, "j").(Model)
+	}
+	t.Fatalf("package %s is not in the Packages panel", name)
+	return m
+}
+
+func TestPackageEntryRestoreUI(t *testing.T) {
+	m := runApply(t, prepareApply(t))
+	for _, name := range []string{".other", ".third"} {
+		path := filepath.Join(m.paths.Target, name)
+		write(t, path, name+"\n")
+		m.stage(path, "misc")
+	}
+	m.focus = Staged
+	updated, _ := m.apply()
+	m = runApply(t, updated.(Model))
+
+	m = focusPackage(t, m, "misc")
+	updated, _ = m.Update(stagingKeyMsg("space"))
+	m = press(t, updated, "j").(Model)
+	updated, _ = m.Update(stagingKeyMsg("space"))
+	m = updated.(Model)
+	if marked := m.mainPkg.Marked(); len(marked) != 2 {
+		t.Fatalf("marked = %v, want two entries", marked)
+	}
+	if !strings.Contains(ansi.Strip(m.mainPkg.View()), "✓ dot-bar") {
+		t.Fatalf("the package table does not mark the entry:\n%s", ansi.Strip(m.mainPkg.View()))
+	}
+
+	m = press(t, m, "r").(Model)
+	if !m.restoreOpen {
+		t.Fatal("r did not open the entry restore plan")
+	}
+	view := ansi.Strip(m.View().Content)
+	for _, want := range []string{"Restore plan: misc", "moves back", "stays linked"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("restore plan does not contain %q:\n%s", want, view)
+		}
+	}
+
+	for _, size := range [][2]int{{60, 16}, {70, 18}, {100, 30}} {
+		updated, rendered := resize(t, m, size[0], size[1])
+		assertScreen(t, rendered, size[0], size[1])
+		m = updated.(Model)
+	}
+
+	m = press(t, m, "enter").(Model)
+	if m.popup != popupConfirm {
+		t.Fatal("entry restore did not ask for confirmation")
+	}
+	for _, size := range [][2]int{{60, 16}, {70, 18}, {100, 30}} {
+		updated, rendered := resize(t, m, size[0], size[1])
+		assertScreen(t, rendered, size[0], size[1])
+		m = updated.(Model)
+	}
+	view = ansi.Strip(m.View().Content)
+	for _, want := range []string{"misc/dot-bar", "misc/dot-other", "Keep 1 entry linked"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("confirmation does not contain %q:\n%s", want, view)
+		}
+	}
+
+	updated, cmd := m.Update(popups.ConfirmedMsg{Action: actionRestore})
+	m = completeOperation(t, updated.(Model), cmd)
+
+	for _, name := range []string{".bar", ".other"} {
+		info, err := os.Lstat(filepath.Join(m.paths.Target, name))
+		if err != nil || !info.Mode().IsRegular() {
+			t.Fatalf("%s was not restored: %v %v", name, info, err)
+		}
+	}
+	if pkg, managed := dotfiles.ManagedBy(m.paths, filepath.Join(m.paths.Target, ".third")); !managed || pkg != "misc" {
+		t.Fatalf(".third owner=%q managed=%v, want it still linked", pkg, managed)
+	}
+	if _, err := os.Stat(filepath.Join(m.paths.Dotfiles, "misc", "dot-third")); err != nil {
+		t.Fatalf("the package lost the remaining entry: %v", err)
+	}
+	if !strings.Contains(strings.Join(m.mainLog.Lines(), "\n"), "restored: misc") {
+		t.Fatal(m.mainLog.Lines())
+	}
+}
+
+func TestPackageEntryRestoreLastEntryRemovesPackage(t *testing.T) {
+	m := runApply(t, prepareApply(t))
+	m = focusPackage(t, m, "misc")
+	m = press(t, m, "r").(Model)
+	if !m.restoreOpen || m.restorePlan.Partial() {
+		t.Fatalf("the only link point must restore like the whole package: partial=%v", m.restorePlan.Partial())
+	}
+	m = press(t, m, "enter").(Model)
+	updated, cmd := m.Update(popups.ConfirmedMsg{Action: actionRestore})
+	m = completeOperation(t, updated.(Model), cmd)
+	if _, err := os.Stat(filepath.Join(m.paths.Dotfiles, "misc")); !os.IsNotExist(err) {
+		t.Fatalf("the package directory survived the last entry restore: %v", err)
 	}
 }
 

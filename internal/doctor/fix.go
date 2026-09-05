@@ -181,13 +181,7 @@ func replace(ctx context.Context, paths config.Paths, issue Issue, action Action
 		os.Remove(backup)
 		emit(events, dotfiles.Event{Kind: dotfiles.Rollback, Package: issue.Package, Message: "restore original target and repository"})
 		if attempted {
-			restorer, ok := runner.(interface {
-				RestowExcluding(string, []string) stow.Result
-			})
-			if !ok {
-				return errors.Join(cause, fmt.Errorf("runner cannot restore unaffected links"))
-			}
-			result := restorer.RestowExcluding(issue.Package, excluded)
+			result := runner.RestowExcluding(issue.Package, excluded)
 			output(events, issue.Package, result)
 			return errors.Join(cause, result.Err)
 		}

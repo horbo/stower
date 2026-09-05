@@ -195,7 +195,11 @@ func replacedDirectory(paths config.Paths, pkg, rel string, entries []dotfiles.E
 }
 
 func BuildRestorePlan(paths config.Paths, pkg string) dotfiles.RestorePlan {
-	plan := dotfiles.BuildRestorePlan(paths, pkg)
+	return BuildEntryRestorePlan(paths, pkg, nil)
+}
+
+func BuildEntryRestorePlan(paths config.Paths, pkg string, pkgRels []string) dotfiles.RestorePlan {
+	plan := dotfiles.BuildEntryRestorePlan(paths, pkg, pkgRels)
 	report := InspectPackage(paths, pkg)
 	if report.Err != nil {
 		plan.Fatal = report.Err

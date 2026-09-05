@@ -160,6 +160,71 @@ func TestBuildRestorePlanBlockedByConflict(t *testing.T) {
 	}
 }
 
+func TestBuildEntryRestorePlanSelectsLinkPoints(t *testing.T) {
+	paths := newPaths(t)
+	writeFile(t, filepath.Join(paths.Dotfiles, "zsh", "dot-zshrc"), "a")
+	writeFile(t, filepath.Join(paths.Dotfiles, "zsh", "dot-zprofile"), "b")
+	writeFile(t, filepath.Join(paths.Dotfiles, "zsh", "dot-p10k.zsh"), "c")
+	symlink(t, "../dotfiles/zsh/dot-zshrc", filepath.Join(paths.Target, ".zshrc"))
+
+	plan := BuildEntryRestorePlan(paths, "zsh", []string{"dot-zshrc"})
+	if plan.Fatal != nil || len(plan.Blocked) != 0 || !plan.Runnable() {
+		t.Fatalf("fatal = %v, blocked = %+v, runnable = %v", plan.Fatal, plan.Blocked, plan.Runnable())
+	}
+	if len(plan.Moves) != 1 || plan.Moves[0].To != filepath.Join(paths.Target, ".zshrc") {
+		t.Fatalf("moves = %+v, want only the selected entry", plan.Moves)
+	}
+	if !reflect.DeepEqual(plan.Selected, []string{"dot-zshrc"}) {
+		t.Errorf("Selected = %v, want [dot-zshrc]", plan.Selected)
+	}
+	if !plan.Partial() || plan.RemoveDir != "" {
+		t.Errorf("RemoveDir = %q, want a partial plan to keep the package directory", plan.RemoveDir)
+	}
+	if len(plan.Entries) != 3 {
+		t.Errorf("entries = %d, want every link point listed", len(plan.Entries))
+	}
+
+	full := BuildEntryRestorePlan(paths, "zsh", []string{"dot-zshrc", "dot-zprofile", "dot-p10k.zsh"})
+	if full.Partial() || full.RemoveDir != filepath.Join(paths.Dotfiles, "zsh") {
+		t.Errorf("RemoveDir = %q, want the whole selection to remove the package directory", full.RemoveDir)
+	}
+	if len(full.Moves) != 3 {
+		t.Errorf("moves = %d, want 3", len(full.Moves))
+	}
+}
+
+func TestBuildEntryRestorePlanBlocks(t *testing.T) {
+	paths := newPaths(t)
+	writeFile(t, filepath.Join(paths.Dotfiles, "zsh", "dot-zshrc"), "repo")
+	writeFile(t, filepath.Join(paths.Dotfiles, "zsh", "dot-config", "app", "conf"), "repo")
+	writeFile(t, filepath.Join(paths.Target, ".zshrc"), "mine")
+	symlink(t, "../../dotfiles/zsh/dot-config/app", filepath.Join(paths.Target, ".config", "app"))
+
+	tests := []struct {
+		name    string
+		pkgRels []string
+	}{
+		{"conflict", []string{"dot-zshrc"}},
+		{"below a folded directory link", []string{filepath.Join("dot-config", "app", "conf")}},
+		{"unknown entry", []string{"dot-nothing"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plan := BuildEntryRestorePlan(paths, "zsh", tt.pkgRels)
+			if len(plan.Blocked) != 1 || plan.Runnable() {
+				t.Fatalf("blocked = %+v, runnable = %v, want one block", plan.Blocked, plan.Runnable())
+			}
+			if len(plan.Moves) != 0 {
+				t.Errorf("moves = %+v, want none", plan.Moves)
+			}
+		})
+	}
+
+	if plan := BuildEntryRestorePlan(paths, "zsh", nil); len(plan.Blocked) != 1 {
+		t.Errorf("whole-package blocked = %+v, want the conflicting entry", plan.Blocked)
+	}
+}
+
 func TestBuildRestorePlanUnknownPackage(t *testing.T) {
 	paths := newPaths(t)
 	plan := BuildRestorePlan(paths, "missing")

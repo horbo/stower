@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -15,7 +16,10 @@ import (
 	"github.com/horbo/stower/internal/tui/popups"
 )
 
-const gitIgnoreContent = ".DS_Store\n"
+const (
+	gitIgnoreContent = ".DS_Store\n"
+	initSubject      = "stower: init"
+)
 
 type gitState struct {
 	available bool
@@ -72,7 +76,8 @@ type commitDoneMsg struct {
 }
 
 type firstRunDoneMsg struct {
-	err error
+	warning string
+	err     error
 }
 
 func prepareCommitCmd(dir string, packages []string, change gitx.Change, manual bool) tea.Cmd {
@@ -112,8 +117,34 @@ func firstRunCmd(dir string, msg popups.FirstRunAppliedMsg) tea.Cmd {
 				}
 			}
 		}
+		if msg.GitInit {
+			if err := commitInitialContent(dir); err != nil {
+				return firstRunDoneMsg{warning: err.Error()}
+			}
+		}
 		return firstRunDoneMsg{}
 	}
+}
+
+func commitInitialContent(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Name() == ".git" {
+			continue
+		}
+		names = append(names, entry.Name())
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	if err := gitx.AddAndCommit(dir, names, initSubject); err != nil && !errors.Is(err, gitx.ErrNothingToCommit) {
+		return err
+	}
+	return nil
 }
 
 func (m *Model) openFirstRun() {
@@ -202,7 +233,14 @@ func (m Model) commitChange(title string, succeeded []string) (gitx.Change, bool
 	case actionApply:
 		return gitx.Change{Operation: gitx.Add, Packages: succeeded}, true
 	case actionRestore:
-		return gitx.Change{Operation: gitx.Remove, Packages: succeeded}, true
+		change := gitx.Change{Operation: gitx.Remove, Packages: succeeded}
+		switch n := len(m.restoreEntries); {
+		case n == 1:
+			change.Entry = m.restorePlan.Package + "/" + m.restoreEntries[0]
+		case n > 1:
+			change.Entry = fmt.Sprintf("%d entries from %s", n, m.restorePlan.Package)
+		}
+		return change, true
 	case actionFix:
 		entry := m.fixIssue.Package
 		if base := filepath.Base(m.fixIssue.Entry.PkgRel); base != "." && base != string(filepath.Separator) {

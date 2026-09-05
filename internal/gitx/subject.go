@@ -33,6 +33,10 @@ func Subject(change Change) string {
 			return subjectPrefix + "fix " + entry
 		}
 		return subjectPrefix + "fix"
+	case Remove:
+		if entry := oneLine(change.Entry); entry != "" {
+			return subjectPrefix + "remove " + entry
+		}
 	}
 	operation := change.Operation
 	if oneLine(string(operation)) == "" {

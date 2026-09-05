@@ -34,6 +34,20 @@ func requireStow(t *testing.T) {
 	}
 }
 
+func isolateGit(t *testing.T) {
+	t.Helper()
+	for _, variable := range [][2]string{
+		{"GIT_CONFIG_GLOBAL", os.DevNull},
+		{"GIT_CONFIG_SYSTEM", os.DevNull},
+		{"GIT_AUTHOR_NAME", "stower test"},
+		{"GIT_AUTHOR_EMAIL", "test@example.invalid"},
+		{"GIT_COMMITTER_NAME", "stower test"},
+		{"GIT_COMMITTER_EMAIL", "test@example.invalid"},
+	} {
+		t.Setenv(variable[0], variable[1])
+	}
+}
+
 func configureRepo(t *testing.T, dir string) {
 	t.Helper()
 	for _, setting := range [][2]string{
@@ -221,6 +235,30 @@ func TestFirstRunGitIgnoreAndQuit(t *testing.T) {
 	}
 	if _, err := os.Stat(other.paths.Dotfiles); !os.IsNotExist(err) {
 		t.Fatalf("esc created the dotfiles directory: %v", err)
+	}
+}
+
+func TestFirstRunCommitsTheCreatedFiles(t *testing.T) {
+	requireGit(t)
+	isolateGit(t)
+	m, paths := newFirstRunModel(t)
+
+	updated, cmd := m.Update(keyMsg("enter"))
+	m = step(updated, cmd).(Model)
+	if !gitx.IsRepo(paths.Dotfiles) {
+		t.Fatal("the dotfiles directory was not initialised")
+	}
+	if subject := strings.TrimSpace(git(t, paths.Dotfiles, "log", "--format=%s")); subject != "stower: init" {
+		t.Fatalf("initial commit subject = %q", subject)
+	}
+	if status := git(t, paths.Dotfiles, "status", "--short"); strings.TrimSpace(status) != "" {
+		t.Fatalf("git status is not clean after the first run:\n%s", status)
+	}
+	if summary := m.status.GitSummary(); summary != "git clean" {
+		t.Fatalf("status git summary = %q", summary)
+	}
+	if m.flash != "" {
+		t.Fatalf("first run reported %q", m.flash)
 	}
 }
 
@@ -417,6 +455,28 @@ func TestCommitChangeSubjects(t *testing.T) {
 	}
 	if _, ok := m.commitChange("unknown", []string{"zsh"}); ok {
 		t.Fatal("an unknown operation produced a commit")
+	}
+}
+
+func TestEntryRestoreCommitSubjects(t *testing.T) {
+	m := Model{restorePlan: dotfiles.RestorePlan{Package: "zsh"}}
+	tests := []struct {
+		entries []string
+		want    string
+	}{
+		{nil, "stower: remove zsh"},
+		{[]string{"dot-zshrc"}, "stower: remove zsh/dot-zshrc"},
+		{[]string{"dot-zshrc", "dot-zprofile"}, "stower: remove 2 entries from zsh"},
+	}
+	for _, tt := range tests {
+		m.restoreEntries = tt.entries
+		change, ok := m.commitChange(actionRestore, []string{"zsh"})
+		if !ok {
+			t.Fatalf("%v: no change", tt.entries)
+		}
+		if got := gitx.Subject(change); got != tt.want {
+			t.Errorf("%v: subject = %q, want %q", tt.entries, got, tt.want)
+		}
 	}
 }
 

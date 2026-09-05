@@ -53,14 +53,33 @@ func (p *RestorePlan) Keys() []key.Binding {
 	return keys
 }
 func (p *RestorePlan) render() {
-	var lines []string
 	if p.plan.Fatal != nil {
-		lines = append(lines, "✘ "+p.plan.Fatal.Error())
+		p.vp.SetContent(components.Truncate("✘ "+p.plan.Fatal.Error(), p.width))
+		return
+	}
+	var lines []string
+	selected := make(map[string]bool, len(p.plan.Selected))
+	for _, rel := range p.plan.Selected {
+		selected[rel] = true
 	}
 	for _, entry := range p.plan.Entries {
-		lines = append(lines, fmt.Sprintf("%s/%s → %s  %s %s", p.plan.Package, entry.PkgRel, entry.TargetPath(p.plan.Paths), stateGlyph(entry.State), entry.State))
+		prefix := ""
+		if p.plan.Partial() {
+			prefix = "  "
+			if selected[entry.PkgRel] {
+				prefix = "↩ "
+			}
+		}
+		lines = append(lines, fmt.Sprintf("%s%s/%s → %s  %s %s", prefix, p.plan.Package, entry.PkgRel, entry.TargetPath(p.plan.Paths), stateGlyph(entry.State), entry.State))
 	}
-	lines = append(lines, "", "Then: remove empty "+p.plan.RemoveDir)
+	if p.plan.Partial() {
+		staying := len(p.plan.Entries) - len(p.plan.Selected)
+		lines = append(lines, "",
+			fmt.Sprintf("↩ %s moves back, %s stays linked", plural(len(p.plan.Selected), "entry", "entries"), plural(staying, "entry", "entries")),
+			fmt.Sprintf("Then: relink %s with stow and keep %s", plural(staying, "entry", "entries"), p.plan.Package))
+	} else {
+		lines = append(lines, "", "Then: remove empty "+p.plan.RemoveDir)
+	}
 	for _, blocked := range p.plan.Blocked {
 		lines = append(lines, "✘ "+blocked.Path, "  "+blocked.Reason+"; fix in Issues first")
 	}

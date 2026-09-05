@@ -150,6 +150,7 @@ type RestorePlan struct {
 	Paths     config.Paths
 	Package   string
 	Entries   []Entry
+	Selected  []string
 	Moves     []Move
 	Blocked   []Blocked
 	RemoveDir string
@@ -160,11 +161,19 @@ func (p RestorePlan) Runnable() bool {
 	return p.Fatal == nil && len(p.Blocked) == 0 && len(p.Moves) > 0
 }
 
+func (p RestorePlan) Partial() bool {
+	return p.RemoveDir == ""
+}
+
 func BuildRestorePlan(paths config.Paths, pkg string) RestorePlan {
-	plan := RestorePlan{
-		Paths:     paths,
-		Package:   pkg,
-		RemoveDir: filepath.Join(paths.Dotfiles, pkg),
+	return BuildEntryRestorePlan(paths, pkg, nil)
+}
+
+func BuildEntryRestorePlan(paths config.Paths, pkg string, pkgRels []string) RestorePlan {
+	whole := pkgRels == nil
+	plan := RestorePlan{Paths: paths, Package: pkg}
+	if whole {
+		plan.RemoveDir = filepath.Join(paths.Dotfiles, pkg)
 	}
 	entries, err := WalkPackage(paths, pkg)
 	if err != nil {
@@ -173,7 +182,33 @@ func BuildRestorePlan(paths config.Paths, pkg string) RestorePlan {
 	}
 	plan.Entries = entries
 
+	selected := make(map[string]bool, len(pkgRels))
+	if !whole {
+		linkPoints := make(map[string]bool, len(entries))
+		for _, entry := range entries {
+			linkPoints[entry.PkgRel] = true
+		}
+		for _, rel := range pkgRels {
+			clean := filepath.Clean(rel)
+			if !linkPoints[clean] {
+				plan.Blocked = append(plan.Blocked, Blocked{
+					Path:    filepath.Join(paths.Dotfiles, pkg, clean),
+					Package: pkg,
+					Reason:  fmt.Sprintf("%s is not a link point of %s", clean, pkg),
+				})
+				continue
+			}
+			selected[clean] = true
+		}
+	}
+	if !whole && len(entries) > 0 && len(selected) == len(entries) {
+		plan.RemoveDir = filepath.Join(paths.Dotfiles, pkg)
+	}
+
 	for _, entry := range entries {
+		if !whole && !selected[entry.PkgRel] {
+			continue
+		}
 		from := entry.PackagePath(paths, pkg)
 		to := entry.TargetPath(paths)
 		if entry.State == Conflict {
@@ -184,6 +219,7 @@ func BuildRestorePlan(paths config.Paths, pkg string) RestorePlan {
 			})
 			continue
 		}
+		plan.Selected = append(plan.Selected, entry.PkgRel)
 		plan.Moves = append(plan.Moves, Move{From: from, To: to})
 	}
 	if err := CheckSameDevice(paths); err != nil {

@@ -243,7 +243,10 @@ The main panel content follows the focused panel and its highlighted item:
 
 - **Package: X**: table ENTRY / TARGET / STATE of every link point, a summary line, and for a
   problematic entry the details (size and mtime of both versions) plus `git diff --no-index`.
-  `enter` moves focus into main so actions apply per entry (`f fix`).
+  `enter` moves focus into main so actions apply per entry (`f fix`, `space mark`,
+  `r restore entries`). `space` marks the highlighted link point with `✓` and the summary line
+  counts the marks; `r` opens the Restore plan for the marked entries, or for the highlighted
+  one when nothing is marked.
 - **Home: ~/path**: kind, size, warnings (`⚠ contains .git/`), directory listing or head of
   the file, `Would become: <pkg>/dot-config/ghostty/`, `Expected link: …`. File counting stops
   at `mainpanel.CountCap` (2000) and shows `2000+ files`. Symlinks that are not managed are
@@ -371,7 +374,11 @@ will be tens to hundreds of ms). Fix candidates, not scheduled: a visited-entry 
 
 Restoring single link points of a package (M7): `stow -D`, move the selected entries back,
 relink the rest with `RestowExcluding`. Entry restore is offered inside the Package main
-context; `r` in the Packages side panel keeps restoring the whole package.
+context; `r` in the Packages side panel keeps restoring the whole package. A selection that
+covers every link point removes the package directory and is exactly a full restore. The plan
+blocks an entry that is not a link point of the package (a file below a folded directory link,
+for example), and the doctor blocks the whole plan while any entry of the package is neither
+`ok` nor `missing`, selected or not: the relink would abort on that entry anyway.
 
 ## v1.2
 

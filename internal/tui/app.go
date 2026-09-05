@@ -164,6 +164,7 @@ type Model struct {
 	diffOpen       bool
 	diffID         int
 	restorePlan    dotfiles.RestorePlan
+	restoreEntries []string
 	fixIssue       doctor.Issue
 	fixAction      doctor.Action
 	restowPackages []string
@@ -345,6 +346,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showError("Cannot prepare the dotfiles directory", msg.err)
 			return m, nil
 		}
+		if msg.warning != "" {
+			return m, tea.Batch(refreshCmd(m.paths), m.setFlash("git: "+msg.warning))
+		}
 		return m, refreshCmd(m.paths)
 	case commitPreparedMsg:
 		return m, m.commitPrepared(msg)
@@ -432,8 +436,16 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if !m.logOpen && !m.diffOpen && !m.restoreOpen {
 		switch msg.String() {
 		case "r":
+			if m.focus == Packages && m.mainFocused {
+				return m, m.openEntryRestore()
+			}
 			if m.focus == Packages {
 				return m, m.openRestore()
+			}
+		case "space":
+			if m.focus == Packages && m.mainFocused {
+				m.mainPkg.ToggleMark()
+				return m, nil
 			}
 		case "f":
 			if m.focus == Issues || (m.focus == Packages && m.mainFocused) {

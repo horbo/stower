@@ -162,6 +162,75 @@ func TestRestoreEachAdoptedShape(t *testing.T) {
 	}
 }
 
+func TestRestoreOneEntryKeepsTheRestLinked(t *testing.T) {
+	requireStow(t)
+	paths := newPaths(t)
+	writeFile(t, filepath.Join(paths.Target, ".zshrc"), "zshrc\n")
+	writeFile(t, filepath.Join(paths.Target, ".zprofile"), "zprofile\n")
+	writeFile(t, filepath.Join(paths.Target, ".p10k.zsh"), "p10k\n")
+
+	adopt(t, paths, Staging{
+		filepath.Join(paths.Target, ".zshrc"):    "zsh",
+		filepath.Join(paths.Target, ".zprofile"): "zsh",
+		filepath.Join(paths.Target, ".p10k.zsh"): "zsh",
+	})
+
+	plan := BuildEntryRestorePlan(paths, "zsh", []string{"dot-zshrc"})
+	if !plan.Runnable() || !plan.Partial() {
+		t.Fatalf("plan is not a runnable partial plan: fatal=%v blocked=%+v", plan.Fatal, plan.Blocked)
+	}
+	if summary := ExecuteRestore(context.Background(), plan, newRunner(paths), nil); !summary.OK() {
+		t.Fatalf("ExecuteRestore: %v", summary.Err())
+	}
+
+	restored := filepath.Join(paths.Target, ".zshrc")
+	if isSymlink(t, restored) {
+		t.Error(".zshrc is still a symlink")
+	}
+	if got := readFile(t, restored); got != "zshrc\n" {
+		t.Errorf(".zshrc = %q, want %q", got, "zshrc\n")
+	}
+	if exists(filepath.Join(paths.Dotfiles, "zsh", "dot-zshrc")) {
+		t.Error("dot-zshrc was kept in the package")
+	}
+	for _, name := range []string{".zprofile", ".p10k.zsh"} {
+		link := filepath.Join(paths.Target, name)
+		if !isSymlink(t, link) {
+			t.Errorf("%s is not a symlink any more", name)
+		}
+		if pkg, ok := ManagedBy(paths, link); !ok || pkg != "zsh" {
+			t.Errorf("ManagedBy(%s) = (%q, %v), want (zsh, true)", name, pkg, ok)
+		}
+	}
+	if !exists(filepath.Join(paths.Dotfiles, "zsh")) {
+		t.Fatal("the package directory was removed by a partial restore")
+	}
+
+	for _, rel := range []string{"dot-zprofile", "dot-p10k.zsh"} {
+		plan := BuildEntryRestorePlan(paths, "zsh", []string{rel})
+		if !plan.Runnable() {
+			t.Fatalf("restore plan for %s is not runnable: fatal=%v blocked=%+v", rel, plan.Fatal, plan.Blocked)
+		}
+		if summary := ExecuteRestore(context.Background(), plan, newRunner(paths), nil); !summary.OK() {
+			t.Fatalf("ExecuteRestore(%s): %v", rel, summary.Err())
+		}
+	}
+	if exists(filepath.Join(paths.Dotfiles, "zsh")) {
+		t.Error("the package directory survived the restore of the last link point")
+	}
+	for path, want := range map[string]string{
+		filepath.Join(paths.Target, ".zprofile"): "zprofile\n",
+		filepath.Join(paths.Target, ".p10k.zsh"): "p10k\n",
+	} {
+		if isSymlink(t, path) {
+			t.Errorf("%s is still a symlink", path)
+		}
+		if got := readFile(t, path); got != want {
+			t.Errorf("%s = %q, want %q", path, got, want)
+		}
+	}
+}
+
 func TestExecuteRollsBackWhenStowFails(t *testing.T) {
 	paths := newPaths(t)
 	writeFile(t, filepath.Join(paths.Target, ".bar"), "bar\n")

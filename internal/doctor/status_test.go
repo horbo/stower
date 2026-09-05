@@ -273,6 +273,54 @@ func TestRestoreAndRestow(t *testing.T) {
 	}
 }
 
+func TestEntryRestorePlanBlockedByReplaced(t *testing.T) {
+	paths, runner := fixture(t)
+	put(t, filepath.Join(paths.Dotfiles, "pkg", "dot-one"), "one")
+	put(t, filepath.Join(paths.Dotfiles, "pkg", "dot-two"), "two")
+	if summary := RestowPackages(context.Background(), []string{"pkg"}, runner, nil); !summary.OK() {
+		t.Fatal(summary.Err())
+	}
+
+	healthy := BuildEntryRestorePlan(paths, "pkg", []string{"dot-one"})
+	if !healthy.Runnable() || !healthy.Partial() {
+		t.Fatalf("entry plan not runnable: %+v", healthy)
+	}
+
+	replaced := filepath.Join(paths.Target, ".two")
+	if err := os.Remove(replaced); err != nil {
+		t.Fatal(err)
+	}
+	put(t, replaced, "mine")
+	if state := issueFor(t, paths, "pkg", Replaced).State; state != Replaced {
+		t.Fatalf("state = %s, want replaced", state)
+	}
+
+	plan := BuildEntryRestorePlan(paths, "pkg", []string{"dot-two"})
+	if plan.Runnable() || len(plan.Blocked) == 0 {
+		t.Fatalf("a replaced entry was accepted: %+v", plan)
+	}
+	if other := BuildEntryRestorePlan(paths, "pkg", []string{"dot-one"}); other.Runnable() {
+		t.Error("a healthy entry stayed restorable while a sibling is replaced")
+	}
+	assertText(t, replaced, "mine")
+}
+
+func TestEntryRestorePlanBlockedByUnnormalized(t *testing.T) {
+	paths, _ := fixture(t)
+	put(t, filepath.Join(paths.Dotfiles, "pkg", ".zshrc"), "repo")
+
+	if plan := dotfiles.BuildEntryRestorePlan(paths, "pkg", []string{".zshrc"}); !plan.Runnable() {
+		t.Fatalf("the mapping layer blocked an unnormalized entry on its own: %+v", plan)
+	}
+	plan := BuildEntryRestorePlan(paths, "pkg", []string{".zshrc"})
+	if plan.Runnable() || len(plan.Blocked) != 1 {
+		t.Fatalf("an unnormalized entry was accepted: %+v", plan)
+	}
+	if !strings.Contains(plan.Blocked[0].Reason, "Issues") {
+		t.Errorf("reason = %q, want it to point to Issues", plan.Blocked[0].Reason)
+	}
+}
+
 func TestDiffExitOneAndMissingGit(t *testing.T) {
 	paths, _ := fixture(t)
 	put(t, filepath.Join(paths.Dotfiles, "pkg", "dot-file"), "repo\n")
