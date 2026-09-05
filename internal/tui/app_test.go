@@ -88,7 +88,7 @@ func TestViewLandscape(t *testing.T) {
 	assertScreen(t, view, 100, 30)
 	plain := ansi.Strip(view)
 	for _, want := range []string{"[0] Status", "[1] Packages", "[2] Home", "[3] Staged", "[4] Issues",
-		"✔ zsh", "✘ misc", "Package: misc", "dot-bar", "unlinked", "stow 2.4.1"} {
+		"✔ zsh", "✘ misc", "Package: misc", "dot-bar", "missing", "1 issue"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("landscape view does not contain %q:\n%s", want, plain)
 		}

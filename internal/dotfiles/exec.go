@@ -84,7 +84,7 @@ func (s Summary) Err() error {
 }
 
 func Execute(ctx context.Context, plan AdoptPlan, runner Runner, events chan<- Event) Summary {
-	em := emitter{ctx: ctx, events: events}
+	em := emitter{events: events}
 	var summary Summary
 	if plan.Fatal != nil {
 		for _, pkg := range plan.Packages {
@@ -110,7 +110,7 @@ func Execute(ctx context.Context, plan AdoptPlan, runner Runner, events chan<- E
 }
 
 func ExecuteRestore(ctx context.Context, plan RestorePlan, runner Runner, events chan<- Event) Summary {
-	em := emitter{ctx: ctx, events: events}
+	em := emitter{events: events}
 	var summary Summary
 	switch {
 	case plan.Fatal != nil:
@@ -134,7 +134,6 @@ func ExecuteRestore(ctx context.Context, plan RestorePlan, runner Runner, events
 }
 
 type emitter struct {
-	ctx    context.Context
 	events chan<- Event
 }
 
@@ -142,14 +141,7 @@ func (e emitter) send(event Event) {
 	if e.events == nil {
 		return
 	}
-	if e.ctx == nil {
-		e.events <- event
-		return
-	}
-	select {
-	case e.events <- event:
-	case <-e.ctx.Done():
-	}
+	e.events <- event
 }
 
 func (e emitter) result(pkg string, result stow.Result) {
@@ -210,6 +202,9 @@ func adoptPackage(ctx context.Context, plan PackageAdopt, runner Runner, em emit
 
 	step = "stow dry run"
 	em.send(Event{Kind: StepStarted, Package: pkg, Message: step})
+	if err := ctx.Err(); err != nil {
+		return fail(step, err)
+	}
 	dry := runner.DryRunRestow(pkg)
 	em.result(pkg, dry)
 	if dry.Err != nil {
@@ -219,6 +214,9 @@ func adoptPackage(ctx context.Context, plan PackageAdopt, runner Runner, em emit
 
 	step = "stow restow"
 	em.send(Event{Kind: StepStarted, Package: pkg, Message: step})
+	if err := ctx.Err(); err != nil {
+		return fail(step, err)
+	}
 	stowed = true
 	result := runner.Restow(pkg)
 	em.result(pkg, result)
@@ -226,6 +224,10 @@ func adoptPackage(ctx context.Context, plan PackageAdopt, runner Runner, em emit
 		return fail(step, result.Err)
 	}
 	em.send(Event{Kind: StepDone, Package: pkg, Message: step})
+
+	if err := ctx.Err(); err != nil {
+		return fail(step, err)
+	}
 
 	if plan.RemoveNestedGit {
 		step = "remove nested .git directories"
@@ -243,6 +245,9 @@ func adoptPackage(ctx context.Context, plan PackageAdopt, runner Runner, em emit
 
 func restorePackage(ctx context.Context, plan RestorePlan, runner Runner, em emitter) error {
 	pkg := plan.Package
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	step := "stow unstow"
 	em.send(Event{Kind: StepStarted, Package: pkg, Message: step})
@@ -283,6 +288,9 @@ func restorePackage(ctx context.Context, plan RestorePlan, runner Runner, em emi
 		em.send(Event{Kind: StepDone, Package: pkg, Message: step})
 	}
 
+	if err := ctx.Err(); err != nil {
+		return fail("restore cancelled", err)
+	}
 	step = "remove " + plan.RemoveDir
 	em.send(Event{Kind: StepStarted, Package: pkg, Message: step})
 	removeEmptyTree(plan.RemoveDir)

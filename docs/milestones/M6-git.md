@@ -59,5 +59,22 @@ git -C "$FAKE/dotfiles" log --oneline; git -C "$FAKE/dotfiles" status --short
 
 ## Notes
 
+- State of the code after M4+M5 (implemented externally, reviewed and committed as one commit):
+  popups are a `popup` enum in `internal/tui/app.go` (`popupNone`, `popupKeys`, `popupAssign`,
+  `popupConfirm`, `popupError`, `popupFix`); add `popupCommit` and `popupFirstRun` the same way.
+  `popups.Confirm.Open(action, title, body []string, undoHint)` is generic; confirmed actions are
+  dispatched in `startConfirmed(action)` in `internal/tui/maintenance.go` (`actionApply`,
+  `actionRestore`, `actionFix`, `actionRestow`). Long-running work goes through
+  `beginOperation(title, plan, work)` in `internal/tui/execution.go`, which owns the Log context,
+  the spinner in Status and the final `refreshCmd`. Hook the Commit popup into the completion
+  path (`finishExecution`) when the summary has at least one success and the dotfiles directory
+  is a git repository.
+- `internal/doctor` exists (`Inspect`, `InspectPackage`, `Fix`, `RestowPackages`, `Diff`);
+  `panels.Packages` items already carry doctor health, add the `*` dirty marker next to it.
+  `panels.Status` renders one line; extend it with the git summary.
+- `cmd/stower/main.go` already parses the `status` and `restow` subcommands; the first-run popup
+  belongs in the TUI path only, the subcommands must keep working without git.
+- Reports from external agents live in `docs/reports/`; an Opus agent reports in the conversation.
+
 - Report whether `git commit` needs `user.name` / `user.email` configured in the test
   environment and how the tests handle it (set them per test repository, never globally).

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,11 +10,14 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
 	"github.com/horbo/stower/internal/config"
+	"github.com/horbo/stower/internal/doctor"
 	"github.com/horbo/stower/internal/dotfiles"
+	"github.com/horbo/stower/internal/stow"
 	"github.com/horbo/stower/internal/tui/components"
 	mainpanel "github.com/horbo/stower/internal/tui/main"
 	"github.com/horbo/stower/internal/tui/panels"
@@ -25,21 +29,43 @@ const (
 	popupMaxWidth = 70
 	popupMargin   = 4
 	flashTimeout  = 4 * time.Second
+	eventBuffer   = 64
+	actionApply   = "apply"
 )
 
 type packageInfo struct {
 	name    string
 	entries []dotfiles.Entry
 	err     error
+	report  doctor.PackageReport
 }
 
 type refreshedMsg struct {
-	pkgs []packageInfo
-	err  error
+	pkgs   []packageInfo
+	issues []doctor.Issue
+	err    error
 }
 
 type flashExpiredMsg struct {
 	id int
+}
+
+type execEventMsg struct {
+	runID int
+	event dotfiles.Event
+}
+
+type execDoneMsg struct {
+	runID   int
+	summary dotfiles.Summary
+}
+
+type execution struct {
+	id        int
+	cancel    context.CancelFunc
+	events    chan tea.Msg
+	cancelled bool
+	plan      dotfiles.AdoptPlan
 }
 
 type popupKind int
@@ -48,6 +74,9 @@ const (
 	popupNone popupKind = iota
 	popupKeys
 	popupAssign
+	popupConfirm
+	popupError
+	popupFix
 )
 
 type mainContext int
@@ -56,6 +85,10 @@ const (
 	contextPackage mainContext = iota
 	contextHomeEntry
 	contextStagedPlan
+	contextLog
+	contextRestore
+	contextIssue
+	contextDiff
 )
 
 type keyMap struct {
@@ -66,6 +99,7 @@ type keyMap struct {
 	ModeNext  key.Binding
 	ModePrev  key.Binding
 	Refresh   key.Binding
+	RestowAll key.Binding
 	Back      key.Binding
 	Enter     key.Binding
 	Panels    key.Binding
@@ -81,7 +115,8 @@ func defaultKeyMap() keyMap {
 		NextPanel: key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next panel")),
 		ModeNext:  key.NewBinding(key.WithKeys("+"), key.WithHelp("+", "wider")),
 		ModePrev:  key.NewBinding(key.WithKeys("_"), key.WithHelp("_", "narrower")),
-		Refresh:   key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "refresh")),
+		Refresh:   key.NewBinding(key.WithKeys("ctrl+r"), key.WithHelp("ctrl+r", "rescan")),
+		RestowAll: key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "restow all")),
 		Back:      key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
 		Enter:     key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "focus main")),
 		Panels:    key.NewBinding(key.WithKeys("0", "1", "2", "3", "4"), key.WithHelp("0-4", "panels")),
@@ -108,23 +143,43 @@ type Model struct {
 	mainFocused bool
 	mode        ScreenMode
 
-	side       [SidePanelCount]Panel
-	status     *panels.Status
-	packages   *panels.Packages
-	homePanel  *panels.Home
-	staged     *panels.Staged
-	issues     *panels.Issues
-	mainPkg    *mainpanel.Package
-	mainHome   *mainpanel.HomeEntry
-	mainStaged *mainpanel.StagedPlan
+	side           [SidePanelCount]Panel
+	status         *panels.Status
+	packages       *panels.Packages
+	homePanel      *panels.Home
+	staged         *panels.Staged
+	issues         *panels.Issues
+	mainPkg        *mainpanel.Package
+	mainHome       *mainpanel.HomeEntry
+	mainStaged     *mainpanel.StagedPlan
+	mainLog        *mainpanel.Log
+	mainRestore    *mainpanel.RestorePlan
+	mainDetail     *mainpanel.Text
+	mainDiff       *mainpanel.Text
+	restoreOpen    bool
+	diffOpen       bool
+	diffID         int
+	restorePlan    dotfiles.RestorePlan
+	fixIssue       doctor.Issue
+	fixAction      doctor.Action
+	restowPackages []string
 
-	keysPopup   *popups.Keys
-	assignPopup *popups.Assign
-	popup       popupKind
+	keysPopup    *popups.Keys
+	assignPopup  *popups.Assign
+	confirmPopup *popups.Confirm
+	errorPopup   *popups.Error
+	fixPopup     *popups.Fix
+	popup        popupKind
 
 	staging   dotfiles.Staging
 	removeGit map[string]bool
+	failures  map[string]string
 	plan      dotfiles.AdoptPlan
+
+	runner  dotfiles.Runner
+	exec    *execution
+	runID   int
+	logOpen bool
 
 	flash    string
 	flashID  int
@@ -138,25 +193,34 @@ func New(paths config.Paths, stowVersion string) Model {
 	st := styles.Default()
 	home := os.Getenv("HOME")
 	m := Model{
-		paths:       paths,
-		home:        home,
-		stowVersion: stowVersion,
-		st:          st,
-		keys:        defaultKeyMap(),
-		focus:       Packages,
-		mode:        ModeNormal,
-		status:      panels.NewStatus(paths, home, stowVersion, st),
-		packages:    panels.NewPackages(st),
-		homePanel:   panels.NewHome(paths, home, st),
-		staged:      panels.NewStaged(paths, home, st),
-		issues:      panels.NewIssues(st),
-		mainPkg:     mainpanel.NewPackage(paths, home, st),
-		mainHome:    mainpanel.NewHomeEntry(paths, home, st),
-		mainStaged:  mainpanel.NewStagedPlan(paths, home, st),
-		keysPopup:   popups.NewKeys(st),
-		assignPopup: popups.NewAssign(st),
-		staging:     dotfiles.Staging{},
-		removeGit:   map[string]bool{},
+		paths:        paths,
+		home:         home,
+		stowVersion:  stowVersion,
+		st:           st,
+		keys:         defaultKeyMap(),
+		focus:        Packages,
+		mode:         ModeNormal,
+		status:       panels.NewStatus(paths, home, stowVersion, st),
+		packages:     panels.NewPackages(st),
+		homePanel:    panels.NewHome(paths, home, st),
+		staged:       panels.NewStaged(paths, home, st),
+		issues:       panels.NewIssues(st),
+		mainPkg:      mainpanel.NewPackage(paths, home, st),
+		mainHome:     mainpanel.NewHomeEntry(paths, home, st),
+		mainStaged:   mainpanel.NewStagedPlan(paths, home, st),
+		mainLog:      mainpanel.NewLog(paths, home, st),
+		mainRestore:  mainpanel.NewRestorePlan(st),
+		mainDetail:   mainpanel.NewText(),
+		mainDiff:     mainpanel.NewText(),
+		fixPopup:     popups.NewFix(st),
+		keysPopup:    popups.NewKeys(st),
+		assignPopup:  popups.NewAssign(st),
+		confirmPopup: popups.NewConfirm(st),
+		errorPopup:   popups.NewError(st),
+		staging:      dotfiles.Staging{},
+		removeGit:    map[string]bool{},
+		failures:     map[string]string{},
+		runner:       stow.Runner{Dotfiles: paths.Dotfiles, Target: paths.Target},
 	}
 	m.side = [SidePanelCount]Panel{m.status, m.packages, m.homePanel, m.staged, m.issues}
 	m.rebuildPlan()
@@ -169,16 +233,16 @@ func (m Model) Init() tea.Cmd {
 
 func refreshCmd(paths config.Paths) tea.Cmd {
 	return func() tea.Msg {
-		names, err := dotfiles.ListPackages(paths)
-		if err != nil {
-			return refreshedMsg{err: err}
+		issues, reports, err := doctor.Inspect(paths)
+		infos := make([]packageInfo, 0, len(reports))
+		for _, report := range reports {
+			entries := make([]dotfiles.Entry, 0, len(report.Entries))
+			for _, item := range report.Entries {
+				entries = append(entries, item.Entry)
+			}
+			infos = append(infos, packageInfo{name: report.Package, entries: entries, err: report.Err, report: report})
 		}
-		infos := make([]packageInfo, 0, len(names))
-		for _, name := range names {
-			entries, walkErr := dotfiles.WalkPackage(paths, name)
-			infos = append(infos, packageInfo{name: name, entries: entries, err: walkErr})
-		}
-		return refreshedMsg{pkgs: infos}
+		return refreshedMsg{pkgs: infos, issues: issues, err: err}
 	}
 }
 
@@ -193,6 +257,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pkgs = msg.pkgs
 		m.loadErr = msg.err
 		m.packages.SetPackages(packageItems(msg.pkgs))
+		m.issues.SetIssues(msg.issues)
+		m.status.SetIssues(len(msg.issues))
 		m.homePanel.Reload()
 		m.homePanel.SetStaging(m.staging)
 		m.rebuildPlan()
@@ -219,6 +285,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.popup = popupNone
 		m.renaming = ""
 		return m, nil
+	case popups.ConfirmedMsg:
+		m.popup = popupNone
+		return m, m.startConfirmed(msg.Action)
+	case popups.FixCancelledMsg:
+		m.popup = popupNone
+		return m, nil
+	case popups.FixChosenMsg:
+		m.popup = popupNone
+		m.fixAction = msg.Action
+		return m, m.startConfirmed(actionFix)
+	case diffLoadedMsg:
+		if msg.id == m.diffID && m.diffOpen {
+			text := msg.text
+			if msg.err != nil {
+				text += "\n" + msg.err.Error()
+			}
+			m.mainDiff.SetText(msg.title, text)
+		}
+		return m, nil
+	case popups.ConfirmCancelledMsg:
+		m.popup = popupNone
+		return m, nil
+	case popups.ErrorClosedMsg:
+		m.popup = popupNone
+		return m, nil
+	case execEventMsg:
+		if m.exec == nil || msg.runID != m.exec.id {
+			return m, nil
+		}
+		m.mainLog.Append(msg.event)
+		return m, waitForEvent(m.exec.events)
+	case execDoneMsg:
+		if m.exec == nil || msg.runID != m.exec.id {
+			return m, nil
+		}
+		return m.finishExecution(msg.summary)
+	case spinner.TickMsg:
+		return m, m.status.Update(msg)
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
@@ -229,6 +333,11 @@ func packageItems(pkgs []packageInfo) []panels.Package {
 	items := make([]panels.Package, 0, len(pkgs))
 	for _, info := range pkgs {
 		linked := true
+		for _, item := range info.report.Entries {
+			if item.State != doctor.OK {
+				linked = false
+			}
+		}
 		for _, entry := range info.entries {
 			if entry.State != dotfiles.Linked {
 				linked = false
@@ -241,6 +350,12 @@ func packageItems(pkgs []packageInfo) []panels.Package {
 }
 
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.exec != nil {
+		if key.Matches(msg, m.keys.ForceQuit) {
+			m.cancelExecution()
+		}
+		return m, nil
+	}
 	if key.Matches(msg, m.keys.ForceQuit) {
 		return m, tea.Quit
 	}
@@ -253,6 +368,12 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.keysPopup.Update(msg)
 	case popupAssign:
 		return m, m.assignPopup.Update(msg)
+	case popupConfirm:
+		return m, m.confirmPopup.Update(msg)
+	case popupError:
+		return m, m.errorPopup.Update(msg)
+	case popupFix:
+		return m, m.fixPopup.Update(msg)
 	}
 
 	if capturer, ok := m.focusedPanel().(inputCapturer); ok && capturer.CapturesInput() {
@@ -261,6 +382,22 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	if !m.logOpen && !m.diffOpen && !m.restoreOpen {
+		switch msg.String() {
+		case "r":
+			if m.focus == Packages {
+				return m, m.openRestore()
+			}
+		case "f":
+			if m.focus == Issues || (m.focus == Packages && m.mainFocused) {
+				return m, m.openFix()
+			}
+		case "D":
+			if m.focus == Issues || (m.focus == Packages && m.mainFocused) {
+				return m, m.openDiff()
+			}
+		}
+	}
 	switch {
 	case key.Matches(msg, m.keys.Quit):
 		return m, tea.Quit
@@ -277,21 +414,53 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.mode = m.mode.Prev()
 		m.relayout()
 		return m, nil
+	case key.Matches(msg, m.keys.RestowAll):
+		if m.logOpen || m.diffOpen {
+			return m, nil
+		}
+		return m, m.confirmRestow()
 	case key.Matches(msg, m.keys.Refresh):
 		return m, refreshCmd(m.paths)
 	case key.Matches(msg, m.keys.NextPanel):
+		m.closeLog()
 		m.focus = nextSide(m.focus)
 		m.mainFocused = false
 		m.relayout()
 		m.syncMain()
 		return m, nil
 	case key.Matches(msg, m.keys.Back):
+		if m.diffOpen {
+			m.diffOpen = false
+			m.mainFocused = m.focus == Packages
+			m.relayout()
+			return m, nil
+		}
+		if m.restoreOpen {
+			m.restoreOpen = false
+			m.mainFocused = false
+			m.relayout()
+			m.syncMain()
+			return m, nil
+		}
+		if m.logOpen {
+			m.closeLog()
+			m.mainFocused = false
+			m.relayout()
+			m.syncMain()
+			return m, nil
+		}
 		if m.mainFocused {
 			m.mainFocused = false
 			m.relayout()
 			return m, nil
 		}
 	case key.Matches(msg, m.keys.Enter):
+		if m.restoreOpen && !m.logOpen {
+			return m, m.confirmRestore()
+		}
+		if m.focus == Staged && !m.logOpen {
+			return m.apply()
+		}
 		if !m.mainFocused && m.canFocusMain() {
 			m.mainFocused = true
 			m.relayout()
@@ -306,6 +475,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	for _, p := range sidePanels {
 		if key.Matches(msg, m.keys.byPanel[p]) {
+			m.closeLog()
 			m.focus = p
 			m.mainFocused = false
 			m.relayout()
@@ -335,6 +505,9 @@ func (m Model) canFocusMain() bool {
 	case Packages:
 		_, ok := m.packages.Selected()
 		return ok
+	case Issues:
+		_, ok := m.issues.Selected()
+		return ok
 	case Staged:
 		return len(m.staging) > 0
 	default:
@@ -343,7 +516,18 @@ func (m Model) canFocusMain() bool {
 }
 
 func (m Model) mainContext() mainContext {
+	if m.logOpen {
+		return contextLog
+	}
+	if m.diffOpen {
+		return contextDiff
+	}
+	if m.restoreOpen {
+		return contextRestore
+	}
 	switch m.focus {
+	case Issues:
+		return contextIssue
 	case Home:
 		return contextHomeEntry
 	case Staged:
@@ -359,9 +543,26 @@ func (m Model) mainPanel() Panel {
 		return m.mainHome
 	case contextStagedPlan:
 		return m.mainStaged
+	case contextLog:
+		return m.mainLog
+	case contextRestore:
+		return m.mainRestore
+	case contextIssue:
+		return m.mainDetail
+	case contextDiff:
+		return m.mainDiff
 	default:
 		return m.mainPkg
 	}
+}
+
+func (m *Model) closeLog() {
+	if m.exec != nil {
+		return
+	}
+	m.logOpen = false
+	m.restoreOpen = false
+	m.diffOpen = false
 }
 
 func (m Model) focusedPanel() Panel {
@@ -402,6 +603,10 @@ func (m *Model) relayout() {
 	m.mainPkg.SetSize(width, height)
 	m.mainHome.SetSize(width, height)
 	m.mainStaged.SetSize(width, height)
+	m.mainLog.SetSize(width, height)
+	m.mainRestore.SetSize(width, height)
+	m.mainDetail.SetSize(width, height)
+	m.mainDiff.SetSize(width, height)
 
 	rect := m.popupRect()
 	switch m.popup {
@@ -409,11 +614,18 @@ func (m *Model) relayout() {
 		m.keysPopup.SetSize(rect.Width, rect.Height)
 	case popupAssign:
 		m.assignPopup.SetSize(rect.Width, rect.Height)
+	case popupConfirm:
+		m.confirmPopup.SetSize(rect.Width, rect.Height)
+	case popupError:
+		m.errorPopup.SetSize(rect.Width, rect.Height)
+	case popupFix:
+		m.fixPopup.SetSize(rect.Width, rect.Height)
 	}
 }
 
 func (m *Model) syncMain() {
 	m.syncPackageContext()
+	m.syncIssueContext()
 	m.syncHomeContext()
 	m.mainStaged.SetPlan(m.plan, m.staged.SelectedPackage())
 }
@@ -426,7 +638,7 @@ func (m *Model) syncPackageContext() {
 	}
 	for _, info := range m.pkgs {
 		if info.name == selected.Name {
-			m.mainPkg.SetPackage(info.name, info.entries, info.err)
+			m.mainPkg.SetReport(info.report)
 			return
 		}
 	}
@@ -450,6 +662,7 @@ func (m *Model) rebuildPlan() {
 	}
 	m.status.SetStaged(len(m.staging))
 	m.staged.SetStaging(m.staging)
+	m.staged.SetFailures(m.failures)
 	m.homePanel.SetStaging(m.staging)
 }
 
@@ -658,8 +871,15 @@ func (m Model) render() string {
 	if m.popup != popupNone {
 		if rect := m.popupRect(); !rect.Empty() {
 			content := m.keysPopup.View()
-			if m.popup == popupAssign {
+			switch m.popup {
+			case popupAssign:
 				content = m.assignPopup.View()
+			case popupConfirm:
+				content = m.confirmPopup.View()
+			case popupError:
+				content = m.errorPopup.View()
+			case popupFix:
+				content = m.fixPopup.View()
 			}
 			layers = append(layers, layerAt(rect, content).Z(1))
 		}
@@ -706,6 +926,9 @@ func (m Model) renderMain(rect Rect) string {
 }
 
 func (m Model) renderKeyBar(width int) string {
+	if m.exec != nil {
+		return components.Fit(" ctrl+c cancel", width)
+	}
 	if m.flash != "" {
 		return components.Fit(" "+m.st.Warn.Render(m.flash), width)
 	}
@@ -756,7 +979,9 @@ func (m Model) keyBarText() string {
 
 func (m Model) contextKeys() []key.Binding {
 	keys := append([]key.Binding{}, m.focusedPanel().Keys()...)
-	if !m.mainFocused && m.canFocusMain() {
+	if m.focus == Staged && !m.logOpen && len(m.staging) > 0 {
+		keys = append(keys, key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "apply")))
+	} else if !m.mainFocused && m.canFocusMain() {
 		keys = append(keys, m.keys.Enter)
 	}
 	return keys
@@ -767,6 +992,7 @@ func (m Model) globalKeys() []key.Binding {
 		m.keys.Panels,
 		m.keys.NextPanel,
 		m.keys.ModeNext,
+		m.keys.RestowAll,
 		m.keys.Refresh,
 		m.keys.Help,
 		m.keys.Quit,

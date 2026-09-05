@@ -183,3 +183,79 @@ func requireStow(t *testing.T) {
 		t.Skip("stow is not installed")
 	}
 }
+
+func TestRestowExcludingArguments(t *testing.T) {
+	runner := Runner{Bin: filepath.Join(t.TempDir(), "missing-stow"), Dotfiles: "/d", Target: "/t"}
+
+	result := runner.RestowExcluding("p", []string{"dot-bar", "dot-config/app", "plain/dot-keep"})
+	want := []string{runner.Bin, "--dotfiles", "-v", "-R",
+		"--ignore=^dot-bar$", "--ignore=^\\.config/app$", "--ignore=^plain/dot-keep$",
+		"-d", "/d", "-t", "/t", "p"}
+	if !reflect.DeepEqual(result.Args, want) {
+		t.Errorf("Args = %q, want %q", result.Args, want)
+	}
+
+	for _, bad := range []string{"", ".", "..", "../x", "/abs"} {
+		if err := runner.RestowExcluding("p", []string{bad}).Err; err == nil {
+			t.Errorf("RestowExcluding(%q) accepted an invalid entry", bad)
+		}
+	}
+}
+
+func TestRestowExcludingWithRealStow(t *testing.T) {
+	bin, err := exec.LookPath("stow")
+	if err != nil {
+		t.Skip("stow is not installed")
+	}
+	root := t.TempDir()
+	dotfiles := filepath.Join(root, "dotfiles")
+	target := filepath.Join(root, "home")
+	pkg := filepath.Join(dotfiles, "p")
+	for _, dir := range []string{filepath.Join(pkg, "dot-config", "app"), filepath.Join(target, ".config", "app")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files := map[string]string{
+		filepath.Join(pkg, "dot-bar"):                   "repo bar",
+		filepath.Join(pkg, "plain"):                     "repo plain",
+		filepath.Join(pkg, "dot-config", "app", "conf"): "repo conf",
+		filepath.Join(target, ".bar"):                   "target bar",
+		filepath.Join(target, ".config", "app", "conf"): "target conf",
+	}
+	for path, content := range files {
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	runner := Runner{Bin: bin, Dotfiles: dotfiles, Target: target}
+	result := runner.RestowExcluding("p", []string{"dot-bar", "dot-config/app"})
+	if result.Err != nil {
+		t.Fatalf("Err = %v; stderr:\n%s", result.Err, result.Stderr)
+	}
+	if result.HasConflicts() {
+		t.Fatalf("Conflicts = %q, want none", result.Conflicts)
+	}
+
+	for _, path := range []string{filepath.Join(target, ".bar"), filepath.Join(target, ".config", "app")} {
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			t.Errorf("%s became a symlink; the excluded entry was stowed", path)
+		}
+	}
+	got, err := os.ReadFile(filepath.Join(target, ".bar"))
+	if err != nil || string(got) != "target bar" {
+		t.Errorf(".bar content = %q, %v; want the untouched target copy", got, err)
+	}
+	info, err := os.Lstat(filepath.Join(target, "plain"))
+	if err != nil {
+		t.Fatalf("plain was not linked: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("plain is not a symlink; unaffected entries must be restowed")
+	}
+}

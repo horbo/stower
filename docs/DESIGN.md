@@ -104,6 +104,12 @@ The domain layer (`dotfiles`, `stow`, `doctor`, `gitx`) has no TUI imports and i
 temporary directories. `exec.go` emits events (step started, output line, step done, step
 failed, rollback) on a channel; the TUI renders them live in the Log context.
 
+Event channel contract (changed in M4): sends on `events` block until received and do **not**
+select on `ctx.Done()`, so rollback events are delivered even after cancellation. The consumer
+must keep draining until `Execute` / `ExecuteRestore` / `doctor.Fix` returns; the TUI does this
+with a forwarding goroutine and a buffered message channel. Cancellation is checked between
+steps and never kills a running stow subprocess.
+
 ## Flows
 
 ### Adopt
@@ -166,6 +172,14 @@ Each link point of each package has one state:
 | foreign      | symlink pointing elsewhere                             | report only                                               |
 | unnormalized | top-level package entry starts with `.` instead of `dot-` | rename like `update.sh` does, skipped when the destination exists |
 
+Detecting a replaced **directory** is a heuristic, because nothing records whether stow folded
+it: a real directory in the target is `replaced` only when no correct link exists anywhere below
+it and at least one regular file sits where a link is expected; otherwise the doctor descends
+and reports the individual entries. An ordinary empty unfolded directory is therefore never
+offered as a destructive repair. `Keep TARGET` / `Keep REPO` move the losing copy to a
+`.stower-backup-*` directory inside dotfiles first and delete it only after a successful restow;
+a failed rollback keeps the backup and reports its path.
+
 Problems appear in the Issues panel; the full per-package table appears in the Package main
 context. `R` restows every package, which is the exact equivalent of `update.sh`.
 The non-interactive subcommands `stower status` and `stower restow` expose the same two
@@ -203,7 +217,8 @@ dim, staged entries accent, ok green, replaced red, warning yellow.
 | [4] | Issues   | doctor problems only: replaced / missing / foreign / unnormalized | `f fix`, `D diff`                                 |
 
 Global keys: `1-4` switch panels (`0` Status), `tab` next panel, `?` full key list, `+` / `_`
-screen modes, `q` quit, `esc` closes a popup, returns focus from main to the side panel, or
+screen modes, `R` restow all packages (with Confirm), `ctrl+r` re-scan without touching the
+filesystem, `q` quit, `esc` closes a popup, returns focus from main to the side panel, or
 clears the Home filter. `x` toggles `remove .git after move` while the Staged plan is shown;
 the `x` context menu is post-v1 and will absorb that toggle as one of its items.
 

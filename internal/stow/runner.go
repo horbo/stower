@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 var (
@@ -63,7 +66,15 @@ func (r Runner) Unstow(pkg string) Result {
 	return r.run([]string{"--dotfiles", "-v", "-D"}, pkg)
 }
 
+func (r Runner) RestowStream(output io.Writer, pkgs ...string) Result {
+	return r.runOutput([]string{"--dotfiles", "-v", "-R"}, output, pkgs...)
+}
+
 func (r Runner) run(flags []string, pkgs ...string) Result {
+	return r.runOutput(flags, nil, pkgs...)
+}
+
+func (r Runner) runOutput(flags []string, output io.Writer, pkgs ...string) Result {
 	bin := r.Bin
 	if bin == "" {
 		bin = "stow"
@@ -90,6 +101,11 @@ func (r Runner) run(flags []string, pkgs ...string) Result {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	if output != nil {
+		stream := &lockedWriter{writer: output}
+		cmd.Stdout = io.MultiWriter(&stdout, stream)
+		cmd.Stderr = io.MultiWriter(&stderr, stream)
+	}
 	runErr := cmd.Run()
 
 	result.Stdout = stdout.String()
@@ -135,4 +151,32 @@ func detail(stderr string) string {
 		return ""
 	}
 	return ": " + strings.Join(strings.Split(trimmed, "\n"), "; ")
+}
+
+type lockedWriter struct {
+	mu     sync.Mutex
+	writer io.Writer
+}
+
+func (w *lockedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.writer.Write(p)
+}
+
+func (r Runner) RestowExcluding(pkg string, entries []string) Result {
+	flags := []string{"--dotfiles", "-v", "-R"}
+	for _, entry := range entries {
+		if !filepath.IsLocal(entry) || entry == "." {
+			return Result{Err: fmt.Errorf("invalid excluded entry: %s", entry)}
+		}
+		parts := strings.Split(filepath.ToSlash(entry), "/")
+		for i := 0; i < len(parts)-1; i++ {
+			if strings.HasPrefix(parts[i], "dot-") {
+				parts[i] = "." + strings.TrimPrefix(parts[i], "dot-")
+			}
+		}
+		flags = append(flags, "--ignore=^"+regexp.QuoteMeta(strings.Join(parts, "/"))+"$")
+	}
+	return r.run(flags, pkg)
 }

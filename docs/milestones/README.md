@@ -9,6 +9,9 @@ single commit named after the milestone (`M1: core library`).
 - `STATUS.md`: the only source of truth for what is queued, in progress, done or blocked.
   Only the coordinating session edits it. Agents never touch it.
 - `M<n>-<slug>.md`: one file per milestone with the fixed structure below.
+- `../reports/M<n>-report.md`: optional written report from an implementation run when the
+  agent cannot report in the conversation (for example an external agent). Never edit a
+  milestone file to record results; results go to STATUS.md notes and, if needed, a report.
 
 ## Milestone file structure
 

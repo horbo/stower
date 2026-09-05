@@ -26,6 +26,7 @@ type StagedRow struct {
 	Package string
 	Path    string
 	Group   bool
+	Reason  string
 }
 
 type stagedKeyMap struct {
@@ -52,6 +53,8 @@ type Staged struct {
 	paths    config.Paths
 	home     string
 	rows     []StagedRow
+	staging  dotfiles.Staging
+	failures map[string]string
 	items    int
 	packages int
 	cursor   int
@@ -67,13 +70,26 @@ func NewStaged(paths config.Paths, home string, st styles.Styles) *Staged {
 }
 
 func (p *Staged) SetStaging(staging dotfiles.Staging) {
+	p.staging = staging
+	p.rebuild()
+}
+
+func (p *Staged) SetFailures(failures map[string]string) {
+	p.failures = failures
+	p.rebuild()
+}
+
+func (p *Staged) rebuild() {
 	selected := ""
 	if row, ok := p.Selected(); ok {
 		selected = row.Path + "\x00" + row.Package
 	}
-	p.rows, p.items, p.packages = stagedRows(staging)
+	p.rows, p.items, p.packages = stagedRows(p.staging, p.failures)
 	p.cursor = 0
 	for i, row := range p.rows {
+		if row.Reason != "" {
+			continue
+		}
 		if row.Path+"\x00"+row.Package == selected {
 			p.cursor = i
 			break
@@ -82,7 +98,7 @@ func (p *Staged) SetStaging(staging dotfiles.Staging) {
 	p.clampOffset()
 }
 
-func stagedRows(staging dotfiles.Staging) ([]StagedRow, int, int) {
+func stagedRows(staging dotfiles.Staging, failures map[string]string) ([]StagedRow, int, int) {
 	byPackage := map[string][]string{}
 	for path, pkg := range staging {
 		byPackage[pkg] = append(byPackage[pkg], path)
@@ -93,11 +109,14 @@ func stagedRows(staging dotfiles.Staging) ([]StagedRow, int, int) {
 	}
 	sort.Strings(names)
 
-	rows := make([]StagedRow, 0, len(staging)+len(names))
+	rows := make([]StagedRow, 0, len(staging)+2*len(names))
 	for _, pkg := range names {
 		paths := byPackage[pkg]
 		sort.Strings(paths)
 		rows = append(rows, StagedRow{Package: pkg, Group: true})
+		if reason := failures[pkg]; reason != "" {
+			rows = append(rows, StagedRow{Package: pkg, Reason: reason})
+		}
 		for _, path := range paths {
 			rows = append(rows, StagedRow{Package: pkg, Path: path})
 		}
@@ -164,13 +183,17 @@ func (p *Staged) move(delta int) {
 	if len(p.rows) == 0 {
 		return
 	}
-	p.cursor += delta
-	if p.cursor < 0 {
-		p.cursor = 0
+	next := p.cursor
+	for {
+		next += delta
+		if next < 0 || next >= len(p.rows) {
+			return
+		}
+		if p.rows[next].Reason == "" {
+			break
+		}
 	}
-	if p.cursor >= len(p.rows) {
-		p.cursor = len(p.rows) - 1
-	}
+	p.cursor = next
 	p.clampOffset()
 }
 
@@ -208,14 +231,19 @@ func (p *Staged) View() string {
 func (p *Staged) row(i int) string {
 	row := p.rows[i]
 	text := "  " + components.DisplayPath(row.Path, p.home)
-	if row.Group {
+	switch {
+	case row.Group:
 		text = row.Package + "/"
+	case row.Reason != "":
+		text = "  ✘ " + row.Reason
 	}
 	line := components.Fit(text, p.width)
-	if i == p.cursor {
+	switch {
+	case row.Reason != "":
+		return p.st.Error.Render(line)
+	case i == p.cursor:
 		return p.st.Selected.Render(line)
-	}
-	if row.Group {
+	case row.Group:
 		return p.st.Header.Render(line)
 	}
 	return line

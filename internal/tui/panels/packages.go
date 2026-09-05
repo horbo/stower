@@ -169,6 +169,8 @@ func (p *Packages) Counter() string {
 
 func (p *Packages) Keys() []key.Binding {
 	return []key.Binding{
+		key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "restore")),
+		key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "restow all")),
 		key.NewBinding(key.WithKeys("j", "k"), key.WithHelp("j/k", "move")),
 		key.NewBinding(key.WithKeys("g", "G"), key.WithHelp("g/G", "top/bottom")),
 	}
