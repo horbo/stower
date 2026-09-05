@@ -37,6 +37,7 @@ func newStagingModel(t *testing.T) (tea.Model, config.Paths) {
 	paths := config.Paths{Target: root, Dotfiles: dotfilesDir}
 	model := New(paths, "2.4.1")
 	updated, _ := model.Update(model.Init()())
+	updated = declineGitInit(updated)
 	updated, _ = updated.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	return updated, paths
 }

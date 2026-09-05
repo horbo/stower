@@ -43,6 +43,7 @@ type packageInfo struct {
 type refreshedMsg struct {
 	pkgs   []packageInfo
 	issues []doctor.Issue
+	git    gitState
 	err    error
 }
 
@@ -66,6 +67,7 @@ type execution struct {
 	events    chan tea.Msg
 	cancelled bool
 	plan      dotfiles.AdoptPlan
+	title     string
 }
 
 type popupKind int
@@ -77,6 +79,8 @@ const (
 	popupConfirm
 	popupError
 	popupFix
+	popupCommit
+	popupFirstRun
 )
 
 type mainContext int
@@ -164,12 +168,17 @@ type Model struct {
 	fixAction      doctor.Action
 	restowPackages []string
 
-	keysPopup    *popups.Keys
-	assignPopup  *popups.Assign
-	confirmPopup *popups.Confirm
-	errorPopup   *popups.Error
-	fixPopup     *popups.Fix
-	popup        popupKind
+	keysPopup     *popups.Keys
+	assignPopup   *popups.Assign
+	confirmPopup  *popups.Confirm
+	errorPopup    *popups.Error
+	fixPopup      *popups.Fix
+	commitPopup   *popups.Commit
+	firstRunPopup *popups.FirstRun
+	popup         popupKind
+
+	git         gitState
+	gitDeclined bool
 
 	staging   dotfiles.Staging
 	removeGit map[string]bool
@@ -193,36 +202,41 @@ func New(paths config.Paths, stowVersion string) Model {
 	st := styles.Default()
 	home := os.Getenv("HOME")
 	m := Model{
-		paths:        paths,
-		home:         home,
-		stowVersion:  stowVersion,
-		st:           st,
-		keys:         defaultKeyMap(),
-		focus:        Packages,
-		mode:         ModeNormal,
-		status:       panels.NewStatus(paths, home, stowVersion, st),
-		packages:     panels.NewPackages(st),
-		homePanel:    panels.NewHome(paths, home, st),
-		staged:       panels.NewStaged(paths, home, st),
-		issues:       panels.NewIssues(st),
-		mainPkg:      mainpanel.NewPackage(paths, home, st),
-		mainHome:     mainpanel.NewHomeEntry(paths, home, st),
-		mainStaged:   mainpanel.NewStagedPlan(paths, home, st),
-		mainLog:      mainpanel.NewLog(paths, home, st),
-		mainRestore:  mainpanel.NewRestorePlan(st),
-		mainDetail:   mainpanel.NewText(),
-		mainDiff:     mainpanel.NewText(),
-		fixPopup:     popups.NewFix(st),
-		keysPopup:    popups.NewKeys(st),
-		assignPopup:  popups.NewAssign(st),
-		confirmPopup: popups.NewConfirm(st),
-		errorPopup:   popups.NewError(st),
-		staging:      dotfiles.Staging{},
-		removeGit:    map[string]bool{},
-		failures:     map[string]string{},
-		runner:       stow.Runner{Dotfiles: paths.Dotfiles, Target: paths.Target},
+		paths:         paths,
+		home:          home,
+		stowVersion:   stowVersion,
+		st:            st,
+		keys:          defaultKeyMap(),
+		focus:         Packages,
+		mode:          ModeNormal,
+		status:        panels.NewStatus(paths, home, stowVersion, st),
+		packages:      panels.NewPackages(st),
+		homePanel:     panels.NewHome(paths, home, st),
+		staged:        panels.NewStaged(paths, home, st),
+		issues:        panels.NewIssues(st),
+		mainPkg:       mainpanel.NewPackage(paths, home, st),
+		mainHome:      mainpanel.NewHomeEntry(paths, home, st),
+		mainStaged:    mainpanel.NewStagedPlan(paths, home, st),
+		mainLog:       mainpanel.NewLog(paths, home, st),
+		mainRestore:   mainpanel.NewRestorePlan(st),
+		mainDetail:    mainpanel.NewText(),
+		mainDiff:      mainpanel.NewText(),
+		fixPopup:      popups.NewFix(st),
+		keysPopup:     popups.NewKeys(st),
+		assignPopup:   popups.NewAssign(st),
+		confirmPopup:  popups.NewConfirm(st),
+		errorPopup:    popups.NewError(st),
+		commitPopup:   popups.NewCommit(st),
+		firstRunPopup: popups.NewFirstRun(st),
+		staging:       dotfiles.Staging{},
+		removeGit:     map[string]bool{},
+		failures:      map[string]string{},
+		runner:        stow.Runner{Dotfiles: paths.Dotfiles, Target: paths.Target},
 	}
 	m.side = [SidePanelCount]Panel{m.status, m.packages, m.homePanel, m.staged, m.issues}
+	m.git = inspectGit(paths)
+	m.status.SetGit(m.git.repo, len(m.git.dirty))
+	m.openFirstRun()
 	m.rebuildPlan()
 	return m
 }
@@ -242,7 +256,7 @@ func refreshCmd(paths config.Paths) tea.Cmd {
 			}
 			infos = append(infos, packageInfo{name: report.Package, entries: entries, err: report.Err, report: report})
 		}
-		return refreshedMsg{pkgs: infos, issues: issues, err: err}
+		return refreshedMsg{pkgs: infos, issues: issues, git: inspectGit(paths), err: err}
 	}
 }
 
@@ -256,9 +270,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case refreshedMsg:
 		m.pkgs = msg.pkgs
 		m.loadErr = msg.err
-		m.packages.SetPackages(packageItems(msg.pkgs))
+		m.git = msg.git
+		m.packages.SetPackages(packageItems(msg.pkgs, msg.git))
 		m.issues.SetIssues(msg.issues)
 		m.status.SetIssues(len(msg.issues))
+		m.status.SetGit(m.git.repo, len(m.git.dirty))
 		m.homePanel.Reload()
 		m.homePanel.SetStaging(m.staging)
 		m.rebuildPlan()
@@ -307,6 +323,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case popups.ConfirmCancelledMsg:
 		m.popup = popupNone
 		return m, nil
+	case popups.CommitMsg:
+		m.popup = popupNone
+		packages := m.commitPopup.Packages()
+		m.relayout()
+		return m, commitCmd(m.paths.Dotfiles, packages, msg.Subject)
+	case popups.CommitSkippedMsg:
+		m.popup = popupNone
+		m.relayout()
+		return m, m.setFlash("commit skipped")
+	case popups.CommitCancelledMsg:
+		m.popup = popupNone
+		m.relayout()
+		return m, nil
+	case popups.FirstRunAppliedMsg:
+		return m, m.applyFirstRun(msg)
+	case popups.FirstRunCancelledMsg:
+		return m, m.cancelFirstRun(msg)
+	case firstRunDoneMsg:
+		if msg.err != nil {
+			m.showError("Cannot prepare the dotfiles directory", msg.err)
+			return m, nil
+		}
+		return m, refreshCmd(m.paths)
+	case commitPreparedMsg:
+		return m, m.commitPrepared(msg)
+	case commitDoneMsg:
+		return m, m.commitFinished(msg)
 	case popups.ErrorClosedMsg:
 		m.popup = popupNone
 		return m, nil
@@ -329,7 +372,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, m.focusedPanel().Update(msg)
 }
 
-func packageItems(pkgs []packageInfo) []panels.Package {
+func packageItems(pkgs []packageInfo, git gitState) []panels.Package {
 	items := make([]panels.Package, 0, len(pkgs))
 	for _, info := range pkgs {
 		linked := true
@@ -344,7 +387,7 @@ func packageItems(pkgs []packageInfo) []panels.Package {
 				break
 			}
 		}
-		items = append(items, panels.Package{Name: info.name, Linked: linked, Failed: info.err != nil})
+		items = append(items, panels.Package{Name: info.name, Linked: linked, Failed: info.err != nil, Dirty: git.dirty[info.name] > 0})
 	}
 	return items
 }
@@ -374,6 +417,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.errorPopup.Update(msg)
 	case popupFix:
 		return m, m.fixPopup.Update(msg)
+	case popupCommit:
+		return m, m.commitPopup.Update(msg)
+	case popupFirstRun:
+		return m, m.firstRunPopup.Update(msg)
 	}
 
 	if capturer, ok := m.focusedPanel().(inputCapturer); ok && capturer.CapturesInput() {
@@ -395,6 +442,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "D":
 			if m.focus == Issues || (m.focus == Packages && m.mainFocused) {
 				return m, m.openDiff()
+			}
+		case "c":
+			if (m.focus == Status || m.focus == Packages) && !m.mainFocused {
+				return m, m.openCommit()
 			}
 		}
 	}
@@ -620,6 +671,10 @@ func (m *Model) relayout() {
 		m.errorPopup.SetSize(rect.Width, rect.Height)
 	case popupFix:
 		m.fixPopup.SetSize(rect.Width, rect.Height)
+	case popupCommit:
+		m.commitPopup.SetSize(rect.Width, rect.Height)
+	case popupFirstRun:
+		m.firstRunPopup.SetSize(rect.Width, rect.Height)
 	}
 }
 
@@ -880,6 +935,10 @@ func (m Model) render() string {
 				content = m.errorPopup.View()
 			case popupFix:
 				content = m.fixPopup.View()
+			case popupCommit:
+				content = m.commitPopup.View()
+			case popupFirstRun:
+				content = m.firstRunPopup.View()
 			}
 			layers = append(layers, layerAt(rect, content).Z(1))
 		}

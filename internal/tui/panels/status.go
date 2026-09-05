@@ -2,7 +2,6 @@ package panels
 
 import (
 	"fmt"
-	"strings"
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"
@@ -19,6 +18,8 @@ type Status struct {
 	stowVersion string
 	staged      int
 	issues      int
+	repo        bool
+	dirty       int
 	running     bool
 	width       int
 	height      int
@@ -72,6 +73,22 @@ func (s *Status) SetStaged(n int) {
 
 func (s *Status) SetIssues(n int) { s.issues = n }
 
+func (s *Status) SetGit(repo bool, dirty int) {
+	s.repo = repo
+	s.dirty = dirty
+}
+
+func (s *Status) GitSummary() string {
+	switch {
+	case !s.repo:
+		return "no git"
+	case s.dirty == 0:
+		return "git clean"
+	default:
+		return fmt.Sprintf("git %d*", s.dirty)
+	}
+}
+
 func (s *Status) View() string {
 	dotfiles := components.DisplayPath(s.paths.Dotfiles, s.home)
 	target := components.DisplayPath(s.paths.Target, s.home)
@@ -90,18 +107,25 @@ func (s *Status) View() string {
 	case s.staged > 0:
 		staged = fmt.Sprintf("  %d staged", s.staged)
 	}
+	git := s.GitSummary()
+	dim := "  " + s.st.Dim.Render("stow "+version) + "  " + s.st.Dim.Render(git)
 	arrow := " " + s.st.Accent.Render("→") + " "
-	for _, suffix := range []string{"  stow " + version + staged + issues, staged + issues, staged, issues, ""} {
-		room := s.width - components.Width(suffix) - 3
+	candidates := []struct{ plain, rendered string }{
+		{"  stow " + version + "  " + git + staged + issues, dim + s.st.Accent.Render(staged+issues)},
+		{"  " + git + staged + issues, "  " + s.st.Dim.Render(git) + s.st.Accent.Render(staged+issues)},
+		{staged + issues, s.st.Accent.Render(staged + issues)},
+		{staged, s.st.Accent.Render(staged)},
+		{issues, s.st.Accent.Render(issues)},
+		{"", ""},
+	}
+	for _, candidate := range candidates {
+		room := s.width - components.Width(candidate.plain) - 3
 		if room < 8 {
 			continue
 		}
 		left, right := share(room, components.Width(dotfiles), components.Width(target))
 		line := components.TruncateLeft(dotfiles, left) + arrow + components.TruncateLeft(target, right)
-		if strings.HasPrefix(suffix, "  stow ") {
-			return line + "  " + s.st.Dim.Render("stow "+version) + s.st.Accent.Render(staged+issues)
-		}
-		return line + s.st.Accent.Render(suffix)
+		return line + candidate.rendered
 	}
 	return components.Truncate(dotfiles+arrow+target, s.width)
 }
@@ -130,5 +154,8 @@ func (s *Status) Counter() string {
 }
 
 func (s *Status) Keys() []key.Binding {
-	return []key.Binding{key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "restow all"))}
+	return []key.Binding{
+		key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "commit")),
+		key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "restow all")),
+	}
 }

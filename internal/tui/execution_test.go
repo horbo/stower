@@ -74,7 +74,7 @@ func TestApplyRealStowAndRefresh(t *testing.T) {
 			t.Fatalf("%s owner=%s managed=%v", path, owner, managed)
 		}
 	}
-	for _, pkg := range packageItems(m.pkgs) {
+	for _, pkg := range packageItems(m.pkgs, m.git) {
 		if (pkg.Name == "misc" || pkg.Name == "foo") && (!pkg.Linked || pkg.Failed) {
 			t.Fatalf("package not healthy: %+v", pkg)
 		}

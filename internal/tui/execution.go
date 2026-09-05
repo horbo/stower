@@ -63,7 +63,7 @@ func (m *Model) beginOperation(title string, plan dotfiles.AdoptPlan, work func(
 	}
 	m.runID++
 	ctx, cancel := context.WithCancel(context.Background())
-	run := &execution{id: m.runID, cancel: cancel, events: make(chan tea.Msg, eventBuffer), plan: plan}
+	run := &execution{id: m.runID, cancel: cancel, events: make(chan tea.Msg, eventBuffer), plan: plan, title: title}
 	m.exec = run
 	m.flash = ""
 	m.logOpen = true
@@ -135,5 +135,8 @@ func (m Model) finishExecution(summary dotfiles.Summary) (tea.Model, tea.Cmd) {
 	m.status.SetRunning(false)
 	m.rebuildPlan()
 	m.syncMain()
+	if commit := m.offerCommit(run.title, summary.Succeeded); commit != nil {
+		return m, tea.Batch(refreshCmd(m.paths), commit)
+	}
 	return m, refreshCmd(m.paths)
 }

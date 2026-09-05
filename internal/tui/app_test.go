@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/horbo/stower/internal/config"
+	"github.com/horbo/stower/internal/tui/popups"
 )
 
 func newTestModel(t *testing.T) tea.Model {
@@ -26,6 +27,14 @@ func newTestModel(t *testing.T) tea.Model {
 
 	model := New(config.Paths{Target: root, Dotfiles: dotfilesDir}, "2.4.1")
 	updated, _ := model.Update(model.Init()())
+	return declineGitInit(updated)
+}
+
+func declineGitInit(model tea.Model) tea.Model {
+	if model.(Model).popup != popupFirstRun {
+		return model
+	}
+	updated, _ := model.Update(popups.FirstRunCancelledMsg{Offer: true})
 	return updated
 }
 

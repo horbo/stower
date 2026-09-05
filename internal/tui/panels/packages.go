@@ -15,6 +15,7 @@ type Package struct {
 	Name   string
 	Linked bool
 	Failed bool
+	Dirty  bool
 }
 
 type packagesKeyMap struct {
@@ -146,7 +147,11 @@ func (p *Packages) row(i int) string {
 	case !item.Linked:
 		glyph, glyphStyle = "✘", p.st.Error
 	}
-	line := components.Fit(glyph+" "+item.Name, p.width)
+	name := item.Name
+	if item.Dirty {
+		name += " *"
+	}
+	line := components.Fit(glyph+" "+name, p.width)
 	if i == p.cursor {
 		return p.st.Selected.Render(line)
 	}
@@ -171,6 +176,7 @@ func (p *Packages) Keys() []key.Binding {
 	return []key.Binding{
 		key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "restore")),
 		key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "restow all")),
+		key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "commit")),
 		key.NewBinding(key.WithKeys("j", "k"), key.WithHelp("j/k", "move")),
 		key.NewBinding(key.WithKeys("g", "G"), key.WithHelp("g/G", "top/bottom")),
 	}

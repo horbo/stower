@@ -194,7 +194,17 @@ operations for scripting and verification.
   for the touched packages and proposes a subject-only message: `stower: add zsh (3 files)`,
   `stower: remove zsh`, `stower: fix claude/settings.json`. Execution:
   `git -C <dotfiles> add -A -- <pkg>` (also captures deletions) then `git commit -m`.
-- Packages shows `*` next to packages with uncommitted changes; Status shows the total.
+- Packages shows `*` next to packages with uncommitted changes; Status shows the total of
+  dirty top-level entries (packages and anything else at the root, so a modified `README` is
+  not invisible), `git clean`, or `no git`.
+- M6 decisions: `IsRepo` is strict (the dotfiles directory must be the work-tree root, so a
+  dotfiles directory nested in another repository reads as `no git`); one whole-repo
+  `git status --porcelain --untracked-files=all` per refresh feeds both markers; the Commit
+  popup has an edit mode (`e` / `i`) because `s` skip would otherwise be typed into the subject;
+  an `Update` operation renders the manual `c` commit as `stower: update zsh (2 files)`.
+- Known small issue (carry-over to M7): after first run with `.gitignore` checked, the file
+  stays untracked because the automatic commit adds only packages; Status shows `git 1*` until
+  a manual `c`. Fix: first run commits `stower: init` when git init is chosen.
 - No push in v1.
 
 ## TUI design
@@ -357,9 +367,27 @@ move onto a directory in Home (measured 4.6 ms on 10k files warm; a `node_module
 will be tens to hundreds of ms). Fix candidates, not scheduled: a visited-entry budget in
 `HasNestedGit`, or running the Home entry inspection as a `tea.Cmd` with a spinner.
 
-## Out of scope for v1
+## v1.1
+
+Restoring single link points of a package (M7): `stow -D`, move the selected entries back,
+relink the rest with `RestowExcluding`. Entry restore is offered inside the Package main
+context; `r` in the Packages side panel keeps restoring the whole package.
+
+## v1.2
+
+Mouse support (M8): click to focus and select, wheel to scroll, clicks in popups, gated by
+`--no-mouse` / `STOWER_NO_MOUSE` so terminal text selection stays available. Hit-testing goes
+through `Layout.Rects()` and a `Click(x, y)` method on panels that own a cursor.
+
+## v1.3
+
+Open in `$EDITOR` (M9): `o` opens the highlighted entry (target path in Home, repository copy
+in the Package context and Issues, `shift+o` for the other side), the TUI suspends the
+alternate screen while the editor runs and re-scans on return. `$VISUAL` wins over `$EDITOR`,
+the value is split quote-aware and never run through a shell.
+
+## Out of scope for v1.3
 
 Security warnings (`~/.ssh`, `~/.gnupg`, `~/.aws`, cache and runtime directories, `.gitignore`
-suggestions), restoring single entries of a package, an on-disk journal for crash recovery
-during moves, goreleaser and a Homebrew tap, teatest coverage for the TUI, extra menu actions
-such as opening an entry in `$EDITOR`.
+suggestions), an on-disk journal for crash recovery
+during moves, goreleaser and a Homebrew tap, teatest coverage for the TUI, the `x` context menu.
