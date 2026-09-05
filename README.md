@@ -144,3 +144,7 @@ go test -race ./internal/...
 
 The design and the domain rules live in `docs/DESIGN.md`; milestones and their status in
 `docs/milestones/`; the release procedure in `docs/RELEASING.md`.
+
+## License
+
+MIT, see `LICENSE`.

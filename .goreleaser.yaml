@@ -33,7 +33,7 @@ archives:
     name_template: "stower_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - README.md
-      - LICENSE*
+      - LICENSE
 
 checksum:
   name_template: "checksums.txt"
@@ -59,6 +59,7 @@ brews:
     directory: Formula
     homepage: "https://github.com/horbo/stower"
     description: "Terminal UI for managing a dotfiles repository with GNU Stow"
+    license: "MIT"
     skip_upload: auto
     commit_author:
       name: stower-release-bot
