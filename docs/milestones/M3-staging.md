@@ -25,6 +25,8 @@ M2.
 - `popups/assign.go`: list of existing packages plus a `new package:` `textinput`; `enter`
   confirms, `esc` cancels; name validated by `dotfiles.ValidatePackageName` with an inline
   error line.
+- `dotfiles.ValidateStagingPath` gains one rule: reject an entry whose first component
+  relative to the target starts with `dot-` (see DESIGN.md "Path mapping"). Table test.
 - Staging model in `app.go`: `dotfiles.Staging`, add / remove, descendant de-duplication
   (staging a directory drops staged descendants and refuses staging a descendant of a staged
   directory, with a one-line message shown in the key bar area for a few seconds).

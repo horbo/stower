@@ -66,6 +66,10 @@ go run ./cmd/stower status --target "$FAKE" --dotfiles "$FAKE/dotfiles"; echo "e
 
 ## Notes
 
+- `unnormalized` also covers a deeper package component that starts with `dot-` (report only,
+  no fix), per DESIGN.md "Path mapping". M1 verified stow translates `dot-` at every level.
+- M1 verified that `stow -D` silently skips a link point replaced by a regular file (exit 0,
+  no conflict line). The restore plan already blocks on `Conflict`; never bypass that block.
 - Apply what M1 reported about `stow -D` on replaced links: if stow exits non-zero there, the
   restore plan must stay blocked and the log must show the reason.
 - Report whether `git diff --no-index` exit code 1 (differences found) is handled as success.

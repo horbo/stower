@@ -26,6 +26,15 @@ is deliberate: stow folds directories that do not yet exist in the target, so de
 linked as a whole and never translated. The mapping is bijective, so restoring a package needs
 no state file: `P/dot-config/nvim` maps back to `~/.config/nvim` unambiguously.
 
+Two findings from M1 (verified against stow 2.4.1):
+
+- stow itself translates `dot-` at **every** level when given `--dotfiles`
+  (`pkg/dot-config/dot-x` links to `~/.config/.x`). Packages created by stower never contain a
+  deeper `dot-` name, so nothing diverges for them. A hand-written package with a deeper
+  `dot-` name is reported by the doctor as `unnormalized` (report only, no automatic fix).
+- A target entry whose first component literally starts with `dot-` (`~/dot-foo`) would map
+  to `pkg/dot-foo` and be linked back as `~/.foo`. Staging such an entry is rejected.
+
 ### Managed detection
 
 An entry in the target is *managed* when it is a symlink whose resolved destination lies
@@ -114,6 +123,8 @@ failed, rollback) on a channel; the TUI renders them live in the Log context.
    - package name must match `[A-Za-z0-9._-]+` and must not start with `.`;
    - a staged directory containing a nested `.git`: warning, with a plan toggle
      `remove .git after move` (git would otherwise treat it as an embedded repository);
+   - first path component of the staged entry starts with `dot-`: rejected (not reversible
+     under `--dotfiles`);
    - target and dotfiles on different devices (`Stat_t.Dev`): hard error before any move.
 4. The Staged panel and the Staged plan main context show, grouped by package: moves
    (`~/.zshrc → zsh/dot-zshrc`, directories with file counts), expected links (computed from
@@ -126,7 +137,10 @@ failed, rollback) on a channel; the TUI renders them live in the Log context.
    3. `stow -n -v -R <pkg>`: on conflict, roll back the journal, remove the created
       directories, show stderr in the log;
    4. `stow -v -R <pkg>`: on error, same rollback;
-   5. on success, offer a commit and refresh every panel.
+   5. only now, when `remove .git after move` was toggled, delete nested `.git` directories
+      inside the moved entries (deleting earlier would make the rollback lossy); a failure
+      here is reported but does not undo the adoption;
+   6. on success, offer a commit and refresh every panel.
 
 ### Restore
 
