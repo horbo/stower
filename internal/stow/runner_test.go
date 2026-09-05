@@ -3,12 +3,13 @@ package stow
 import (
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/horbo/stower/internal/config"
 )
 
 func TestParseConflicts(t *testing.T) {
@@ -177,11 +178,32 @@ func fakeStow(t *testing.T, code int, message string) string {
 	return path
 }
 
-func requireStow(t *testing.T) {
+func requireStow(t *testing.T) string {
 	t.Helper()
-	if _, err := exec.LookPath("stow"); err != nil {
+	bin, version, err := config.StowBinary()
+	if err != nil {
 		t.Skip("stow is not installed")
 	}
+	if !stowSupportsDotfiles(version) {
+		t.Skipf("stow %s is too old: these tests need stow 2.4 or newer", version)
+	}
+	return bin
+}
+
+func stowSupportsDotfiles(version string) bool {
+	parts := strings.SplitN(version, ".", 3)
+	if len(parts) < 2 {
+		return false
+	}
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return false
+	}
+	minor, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return false
+	}
+	return major > 2 || (major == 2 && minor >= 4)
 }
 
 func TestRestowExcludingArguments(t *testing.T) {
@@ -203,10 +225,7 @@ func TestRestowExcludingArguments(t *testing.T) {
 }
 
 func TestRestowExcludingWithRealStow(t *testing.T) {
-	bin, err := exec.LookPath("stow")
-	if err != nil {
-		t.Skip("stow is not installed")
-	}
+	bin := requireStow(t)
 	root := t.TempDir()
 	dotfiles := filepath.Join(root, "dotfiles")
 	target := filepath.Join(root, "home")

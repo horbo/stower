@@ -56,6 +56,16 @@ func TestStatusAndRestowCommands(t *testing.T) {
 	}
 }
 
+func TestVersionFlag(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"--version"}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if stdout.String() != "stower "+version+"\n" {
+		t.Fatalf("unexpected version output: %q", stdout.String())
+	}
+}
+
 func TestStatusNeedsNoStowAndRejectsUnknownArguments(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", root)

@@ -398,8 +398,16 @@ in the Package context and Issues, `shift+o` for the other side), the TUI suspen
 alternate screen while the editor runs and re-scans on return. `$VISUAL` wins over `$EDITOR`,
 the value is split quote-aware and never run through a shell.
 
+## Release
+
+Distribution (M10): a `v*` tag drives goreleaser from GitHub Actions, which builds darwin and
+linux binaries for amd64 and arm64, publishes the GitHub Release and updates the formula in
+the tap `horbo/homebrew-tap`, so `brew install horbo/tap/stower` works. The maintainer
+procedure, the one-time token setup and the recovery steps are in `docs/RELEASING.md`.
+
 ## Out of scope for v1.3
 
 Security warnings (`~/.ssh`, `~/.gnupg`, `~/.aws`, cache and runtime directories, `.gitignore`
 suggestions), an on-disk journal for crash recovery
-during moves, goreleaser and a Homebrew tap, teatest coverage for the TUI, the `x` context menu.
+during moves, signed or notarised binaries, Linux packages, Windows builds, teatest coverage
+for the TUI, the `x` context menu.

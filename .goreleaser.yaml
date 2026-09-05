@@ -1,0 +1,76 @@
+version: 2
+
+project_name: stower
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: stower
+    main: ./cmd/stower
+    binary: stower
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: stower
+    ids:
+      - stower
+    formats:
+      - tar.gz
+    name_template: "stower_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE*
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^Merge "
+
+brews:
+  - name: stower
+    ids:
+      - stower
+    repository:
+      owner: horbo
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/horbo/stower"
+    description: "Terminal UI for managing a dotfiles repository with GNU Stow"
+    skip_upload: auto
+    commit_author:
+      name: stower-release-bot
+      email: stower-release-bot@users.noreply.github.com
+    commit_msg_template: "stower {{ .Version }}"
+    dependencies:
+      - name: stow
+    install: |
+      bin.install "stower"
+    test: |
+      assert_match "stower #{version}", shell_output("#{bin}/stower --version")
+    caveats: |
+      stower needs GNU Stow 2.4 or newer at runtime; it is installed as a dependency.
+      git is optional: without it stower runs, only the commit popup and the dirty
+      markers are unavailable.

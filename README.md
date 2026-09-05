@@ -29,6 +29,21 @@ stow --version
 
 ## Installation
 
+### With Homebrew
+
+```sh
+brew install horbo/tap/stower
+```
+
+Later upgrades:
+
+```sh
+brew upgrade stower
+```
+
+The formula pulls in GNU Stow as a dependency. git is not a dependency: install it yourself
+if you want the commit features.
+
 ### With `go install`
 
 ```sh
@@ -128,4 +143,4 @@ go test -race ./internal/...
 ```
 
 The design and the domain rules live in `docs/DESIGN.md`; milestones and their status in
-`docs/milestones/`.
+`docs/milestones/`; the release procedure in `docs/RELEASING.md`.
