@@ -202,9 +202,15 @@ dim, staged entries accent, ok green, replaced red, warning yellow.
 | [3] | Staged   | session staging grouped by package                             | `enter apply`, `u unstage`, `e rename package`      |
 | [4] | Issues   | doctor problems only: replaced / missing / foreign / unnormalized | `f fix`, `D diff`                                 |
 
-Global keys: `1-4` switch panels (`0` Status), `tab` next panel, `x` context menu for the
-highlighted item, `?` full key list, `+` / `_` screen modes, `q` quit, `esc` closes a popup or
-returns focus from main to the side panel.
+Global keys: `1-4` switch panels (`0` Status), `tab` next panel, `?` full key list, `+` / `_`
+screen modes, `q` quit, `esc` closes a popup, returns focus from main to the side panel, or
+clears the Home filter. `x` toggles `remove .git after move` while the Staged plan is shown;
+the `x` context menu is post-v1 and will absorb that toggle as one of its items.
+
+Panels never mutate shared state directly: they return a `tea.Cmd` emitting a request message
+(`StageRequestMsg`, `UnstageRequestMsg`, `UnstageGroupMsg`, `RenameGroupMsg`) and the root model
+owns the staging map. A panel that needs every key (a filter input, a text field) implements
+`CapturesInput() bool`; the root hands it all input while that returns true.
 
 ### Main panel contexts
 
@@ -214,9 +220,16 @@ The main panel content follows the focused panel and its highlighted item:
   problematic entry the details (size and mtime of both versions) plus `git diff --no-index`.
   `enter` moves focus into main so actions apply per entry (`f fix`).
 - **Home: ~/path**: kind, size, warnings (`⚠ contains .git/`), directory listing or head of
-  the file, `Would become: <pkg>/dot-config/ghostty/`, `Expected link: …`.
+  the file, `Would become: <pkg>/dot-config/ghostty/`, `Expected link: …`. File counting stops
+  at `mainpanel.CountCap` (2000) and shows `2000+ files`. Symlinks that are not managed are
+  also non-selectable and non-expandable, since staging rejects every symlink anyway. The `/`
+  filter matches only visible (expanded) rows by design; a deep search would be a separate
+  asynchronous mode.
 - **Staged plan**: moves grouped by package, expected links, stow command, `✘ blocked` entries
-  with reasons, toggles such as `[x] remove .git after move`.
+  with reasons, toggles such as `[x] remove .git after move`. The toggle is **per package**,
+  driven by the package highlighted in the Staged side panel and toggled with `x` (M3 decision:
+  a per-warning cursor would need a second cursor inside main with no key left to drive it).
+  `›` marks the highlighted package in the plan.
 - **Restore plan: X**: `zsh/dot-zshrc → ~/.zshrc  ✔ linked` per link point,
   `Then: remove empty ~/dotfiles/zsh`, dirty-git warning; blocked variant
   `✘ ~/.zshrc is a regular file → fix in Issues first`.
@@ -321,6 +334,13 @@ Operation flow: Confirm → main becomes Log → Commit popup → every panel re
   `charmbracelet/x/ansi` or an equivalent already pulled in by the pinned dependencies).
 - `layout.go` exposes pure functions `(W, H, focus, mode) → rectangles`, table-tested at
   `60×16`, `80×24`, `100×30`, `70×18`, `200×50`.
+
+## Known performance debt
+
+`dotfiles.HasNestedGit` walks a staged directory without a budget and runs on every cursor
+move onto a directory in Home (measured 4.6 ms on 10k files warm; a `node_modules`-sized tree
+will be tens to hundreds of ms). Fix candidates, not scheduled: a visited-entry budget in
+`HasNestedGit`, or running the Home entry inspection as a `tea.Cmd` with a spinner.
 
 ## Out of scope for v1
 

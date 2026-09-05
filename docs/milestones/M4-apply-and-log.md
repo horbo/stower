@@ -56,5 +56,17 @@ ls -la "$FAKE" "$FAKE/.config"; find "$FAKE/dotfiles" -type f
 
 ## Notes
 
+- M3 built the staging model, the Staged panel and `main/stagedplan.go`; `app.go` routes main
+  contexts through `mainContext()` / `mainPanel()` by `m.focus`. Add the Log context there.
+  Popups are a `popup` enum in `app.go` (`popupNone`, `popupKeys`, `popupAssign`); add
+  `popupConfirm` and `popupError` the same way. Panels needing all keys implement
+  `CapturesInput() bool`.
+- `dotfiles.Execute` takes an `events chan<- Event` and never closes it; bridge it to Bubble Tea
+  with a goroutine started from a `tea.Cmd` that forwards each event as a message and sends a
+  final done message when `Execute` returns.
+- Optional if time allows, otherwise leave for later: move the Home entry inspection
+  (`HasNestedGit` + counting) off the UI goroutine into a `tea.Cmd`; see DESIGN.md
+  "Known performance debt".
+
 - Report how long the refresh after an operation takes on a target with a few hundred
   top-level entries and whether it needs to move off the UI goroutine.

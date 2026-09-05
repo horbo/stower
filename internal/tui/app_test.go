@@ -152,7 +152,7 @@ func TestPanelSelectionAndModes(t *testing.T) {
 func TestKeysPopup(t *testing.T) {
 	model, _ := resize(t, newTestModel(t), 100, 30)
 	model = press(t, model, "?")
-	if !model.(Model).popupOpen {
+	if model.(Model).popup != popupKeys {
 		t.Fatal("? did not open the keys popup")
 	}
 	view := model.View().Content
@@ -164,7 +164,7 @@ func TestKeysPopup(t *testing.T) {
 		}
 	}
 	model = press(t, model, "esc")
-	if model.(Model).popupOpen {
+	if model.(Model).popup != popupNone {
 		t.Fatal("esc did not close the keys popup")
 	}
 }

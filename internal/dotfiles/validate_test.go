@@ -43,6 +43,10 @@ func TestValidateStagingPath(t *testing.T) {
 	writeFile(t, filepath.Join(paths.Dotfiles, "zsh", "dot-zshrc"), "x")
 	symlink(t, "../dotfiles/zsh/dot-zshrc", filepath.Join(paths.Target, ".link"))
 	mkdir(t, filepath.Join(paths.Target, ".config", "foo"))
+	writeFile(t, filepath.Join(paths.Target, "dot-foo"), "x")
+	writeFile(t, filepath.Join(paths.Target, "dot-config", "nvim", "init.lua"), "x")
+	writeFile(t, filepath.Join(paths.Target, "dotfiles-notes"), "x")
+	writeFile(t, filepath.Join(paths.Target, ".config", "dot-deep"), "x")
 
 	tests := []struct {
 		name    string
@@ -51,6 +55,10 @@ func TestValidateStagingPath(t *testing.T) {
 	}{
 		{name: "regular file", path: filepath.Join(paths.Target, ".zshrc")},
 		{name: "directory", path: filepath.Join(paths.Target, ".config", "foo")},
+		{name: "dot prefixed file", path: filepath.Join(paths.Target, "dot-foo"), wantErr: ErrDotPrefixed},
+		{name: "inside a dot prefixed directory", path: filepath.Join(paths.Target, "dot-config", "nvim"), wantErr: ErrDotPrefixed},
+		{name: "prefix only looks similar", path: filepath.Join(paths.Target, "dotfiles-notes")},
+		{name: "dot prefix below the first component", path: filepath.Join(paths.Target, ".config", "dot-deep")},
 		{name: "outside the target", path: filepath.Join(filepath.Dir(paths.Target), "elsewhere"), wantErr: ErrOutsideTarget},
 		{name: "the target itself", path: paths.Target, wantErr: ErrOutsideTarget},
 		{name: "escaping with dot dot", path: filepath.Join(paths.Target, "..", "x"), wantErr: ErrOutsideTarget},

@@ -20,6 +20,7 @@ var (
 	ErrSymlink            = errors.New("path is a symlink")
 	ErrDestinationExists  = errors.New("destination already exists")
 	ErrCrossDevice        = errors.New("target and dotfiles are on different devices")
+	ErrDotPrefixed        = errors.New("path starts with a dot- component")
 )
 
 var packageNameRE = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
@@ -51,11 +52,15 @@ func ValidateStagingPath(paths config.Paths, targetPath string) error {
 		return fmt.Errorf("%w: %s is not an absolute path", ErrOutsideTarget, targetPath)
 	}
 	clean := filepath.Clean(targetPath)
-	if _, err := RelToTarget(paths, clean); err != nil {
+	rel, err := RelToTarget(paths, clean)
+	if err != nil {
 		return err
 	}
 	if isInside(paths.Dotfiles, clean) {
 		return fmt.Errorf("%w: %s", ErrInsideDotfiles, clean)
+	}
+	if first, _ := splitFirst(rel); strings.HasPrefix(first, DotPrefix) {
+		return fmt.Errorf("%w: %s would be linked back as a different name", ErrDotPrefixed, clean)
 	}
 	info, err := os.Lstat(clean)
 	if err != nil {

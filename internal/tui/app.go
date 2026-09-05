@@ -1,8 +1,12 @@
 package tui
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -20,6 +24,7 @@ import (
 const (
 	popupMaxWidth = 70
 	popupMargin   = 4
+	flashTimeout  = 4 * time.Second
 )
 
 type packageInfo struct {
@@ -33,6 +38,26 @@ type refreshedMsg struct {
 	err  error
 }
 
+type flashExpiredMsg struct {
+	id int
+}
+
+type popupKind int
+
+const (
+	popupNone popupKind = iota
+	popupKeys
+	popupAssign
+)
+
+type mainContext int
+
+const (
+	contextPackage mainContext = iota
+	contextHomeEntry
+	contextStagedPlan
+)
+
 type keyMap struct {
 	Quit      key.Binding
 	ForceQuit key.Binding
@@ -44,6 +69,7 @@ type keyMap struct {
 	Back      key.Binding
 	Enter     key.Binding
 	Panels    key.Binding
+	Toggle    key.Binding
 	byPanel   [SidePanelCount]key.Binding
 }
 
@@ -59,6 +85,7 @@ func defaultKeyMap() keyMap {
 		Back:      key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
 		Enter:     key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "focus main")),
 		Panels:    key.NewBinding(key.WithKeys("0", "1", "2", "3", "4"), key.WithHelp("0-4", "panels")),
+		Toggle:    key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "toggle .git removal")),
 	}
 	for _, p := range sidePanels {
 		m.byPanel[p] = key.NewBinding(key.WithKeys(string(rune('0' + int(p)))))
@@ -81,16 +108,27 @@ type Model struct {
 	mainFocused bool
 	mode        ScreenMode
 
-	side      [SidePanelCount]Panel
-	status    *panels.Status
-	packages  *panels.Packages
-	homePanel *panels.Home
-	staged    *panels.Staged
-	issues    *panels.Issues
-	main      *mainpanel.Package
+	side       [SidePanelCount]Panel
+	status     *panels.Status
+	packages   *panels.Packages
+	homePanel  *panels.Home
+	staged     *panels.Staged
+	issues     *panels.Issues
+	mainPkg    *mainpanel.Package
+	mainHome   *mainpanel.HomeEntry
+	mainStaged *mainpanel.StagedPlan
 
-	keysPopup *popups.Keys
-	popupOpen bool
+	keysPopup   *popups.Keys
+	assignPopup *popups.Assign
+	popup       popupKind
+
+	staging   dotfiles.Staging
+	removeGit map[string]bool
+	plan      dotfiles.AdoptPlan
+
+	flash    string
+	flashID  int
+	renaming string
 
 	pkgs    []packageInfo
 	loadErr error
@@ -109,13 +147,19 @@ func New(paths config.Paths, stowVersion string) Model {
 		mode:        ModeNormal,
 		status:      panels.NewStatus(paths, home, stowVersion, st),
 		packages:    panels.NewPackages(st),
-		homePanel:   panels.NewHome(st),
-		staged:      panels.NewStaged(st),
+		homePanel:   panels.NewHome(paths, home, st),
+		staged:      panels.NewStaged(paths, home, st),
 		issues:      panels.NewIssues(st),
-		main:        mainpanel.NewPackage(paths, home, st),
+		mainPkg:     mainpanel.NewPackage(paths, home, st),
+		mainHome:    mainpanel.NewHomeEntry(paths, home, st),
+		mainStaged:  mainpanel.NewStagedPlan(paths, home, st),
 		keysPopup:   popups.NewKeys(st),
+		assignPopup: popups.NewAssign(st),
+		staging:     dotfiles.Staging{},
+		removeGit:   map[string]bool{},
 	}
 	m.side = [SidePanelCount]Panel{m.status, m.packages, m.homePanel, m.staged, m.issues}
+	m.rebuildPlan()
 	return m
 }
 
@@ -149,7 +193,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pkgs = msg.pkgs
 		m.loadErr = msg.err
 		m.packages.SetPackages(packageItems(msg.pkgs))
+		m.homePanel.Reload()
+		m.homePanel.SetStaging(m.staging)
+		m.rebuildPlan()
 		m.syncMain()
+		return m, nil
+	case flashExpiredMsg:
+		if msg.id == m.flashID {
+			m.flash = ""
+		}
+		return m, nil
+	case panels.StageRequestMsg:
+		return m, m.openAssign(msg.Path)
+	case panels.UnstageRequestMsg:
+		m.unstage(msg.Path)
+		return m, nil
+	case panels.UnstageGroupMsg:
+		m.unstageGroup(msg.Package)
+		return m, nil
+	case panels.RenameGroupMsg:
+		return m, m.openRename(msg.Package)
+	case popups.AssignedMsg:
+		return m, m.applyAssignment(msg)
+	case popups.AssignCancelledMsg:
+		m.popup = popupNone
+		m.renaming = ""
 		return m, nil
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
@@ -176,20 +244,28 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if key.Matches(msg, m.keys.ForceQuit) {
 		return m, tea.Quit
 	}
-	if m.popupOpen {
-		switch {
-		case key.Matches(msg, m.keys.Back, m.keys.Help, m.keys.Quit):
-			m.popupOpen = false
+	switch m.popup {
+	case popupKeys:
+		if key.Matches(msg, m.keys.Back, m.keys.Help, m.keys.Quit) {
+			m.popup = popupNone
 			return m, nil
 		}
 		return m, m.keysPopup.Update(msg)
+	case popupAssign:
+		return m, m.assignPopup.Update(msg)
+	}
+
+	if capturer, ok := m.focusedPanel().(inputCapturer); ok && capturer.CapturesInput() {
+		cmd := m.focusedPanel().Update(msg)
+		m.syncMain()
+		return m, cmd
 	}
 
 	switch {
 	case key.Matches(msg, m.keys.Quit):
 		return m, tea.Quit
 	case key.Matches(msg, m.keys.Help):
-		m.popupOpen = true
+		m.popup = popupKeys
 		m.keysPopup.SetSections(m.keySections())
 		m.relayout()
 		return m, nil
@@ -213,16 +289,19 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.mainFocused {
 			m.mainFocused = false
 			m.relayout()
+			return m, nil
 		}
-		return m, nil
 	case key.Matches(msg, m.keys.Enter):
-		if !m.mainFocused && m.focus == Packages {
-			if _, ok := m.packages.Selected(); ok {
-				m.mainFocused = true
-				m.relayout()
-			}
+		if !m.mainFocused && m.canFocusMain() {
+			m.mainFocused = true
+			m.relayout()
+			return m, nil
 		}
-		return m, nil
+	case key.Matches(msg, m.keys.Toggle):
+		if m.mainContext() == contextStagedPlan {
+			m.toggleRemoveGit(m.staged.SelectedPackage())
+			return m, nil
+		}
 	}
 
 	for _, p := range sidePanels {
@@ -247,14 +326,52 @@ func nextSide(focus PanelID) PanelID {
 	return focus + 1
 }
 
+type inputCapturer interface {
+	CapturesInput() bool
+}
+
+func (m Model) canFocusMain() bool {
+	switch m.focus {
+	case Packages:
+		_, ok := m.packages.Selected()
+		return ok
+	case Staged:
+		return len(m.staging) > 0
+	default:
+		return false
+	}
+}
+
+func (m Model) mainContext() mainContext {
+	switch m.focus {
+	case Home:
+		return contextHomeEntry
+	case Staged:
+		return contextStagedPlan
+	default:
+		return contextPackage
+	}
+}
+
+func (m Model) mainPanel() Panel {
+	switch m.mainContext() {
+	case contextHomeEntry:
+		return m.mainHome
+	case contextStagedPlan:
+		return m.mainStaged
+	default:
+		return m.mainPkg
+	}
+}
+
 func (m Model) focusedPanel() Panel {
 	if m.mainFocused {
-		return m.main
+		return m.mainPanel()
 	}
 	if m.focus.IsSide() {
 		return m.side[m.focus]
 	}
-	return m.main
+	return m.mainPanel()
 }
 
 func (m *Model) layoutFocus() PanelID {
@@ -277,30 +394,228 @@ func (m *Model) relayout() {
 		}
 		m.side[p].SetSize(components.InnerWidth(rect.Width), components.InnerHeight(rect.Height))
 	}
-	if m.layout.Main.Empty() {
-		m.main.SetSize(0, 0)
-	} else {
-		m.main.SetSize(components.InnerWidth(m.layout.Main.Width), components.InnerHeight(m.layout.Main.Height))
+	width, height := 0, 0
+	if !m.layout.Main.Empty() {
+		width = components.InnerWidth(m.layout.Main.Width)
+		height = components.InnerHeight(m.layout.Main.Height)
 	}
-	if m.popupOpen {
-		rect := m.popupRect()
+	m.mainPkg.SetSize(width, height)
+	m.mainHome.SetSize(width, height)
+	m.mainStaged.SetSize(width, height)
+
+	rect := m.popupRect()
+	switch m.popup {
+	case popupKeys:
 		m.keysPopup.SetSize(rect.Width, rect.Height)
+	case popupAssign:
+		m.assignPopup.SetSize(rect.Width, rect.Height)
 	}
 }
 
 func (m *Model) syncMain() {
+	m.syncPackageContext()
+	m.syncHomeContext()
+	m.mainStaged.SetPlan(m.plan, m.staged.SelectedPackage())
+}
+
+func (m *Model) syncPackageContext() {
 	selected, ok := m.packages.Selected()
 	if !ok {
-		m.main.SetPackage("", nil, nil)
+		m.mainPkg.SetPackage("", nil, nil)
 		return
 	}
 	for _, info := range m.pkgs {
 		if info.name == selected.Name {
-			m.main.SetPackage(info.name, info.entries, info.err)
+			m.mainPkg.SetPackage(info.name, info.entries, info.err)
 			return
 		}
 	}
-	m.main.SetPackage(selected.Name, nil, nil)
+	m.mainPkg.SetPackage(selected.Name, nil, nil)
+}
+
+func (m *Model) syncHomeContext() {
+	node, ok := m.homePanel.Selected()
+	if !ok {
+		m.mainHome.SetEntry("", "", false)
+		return
+	}
+	pkg, staged := m.staging[node.Path]
+	m.mainHome.SetEntry(node.Path, pkg, staged)
+}
+
+func (m *Model) rebuildPlan() {
+	m.plan = dotfiles.BuildAdoptPlan(m.paths, m.staging)
+	for i := range m.plan.Packages {
+		m.plan.Packages[i].RemoveNestedGit = m.removeGit[m.plan.Packages[i].Package]
+	}
+	m.status.SetStaged(len(m.staging))
+	m.staged.SetStaging(m.staging)
+	m.homePanel.SetStaging(m.staging)
+}
+
+func (m *Model) stagingChanged() {
+	m.rebuildPlan()
+	m.syncMain()
+}
+
+func (m *Model) setFlash(text string) tea.Cmd {
+	m.flash = text
+	m.flashID++
+	id := m.flashID
+	return tea.Tick(flashTimeout, func(time.Time) tea.Msg { return flashExpiredMsg{id: id} })
+}
+
+func (m *Model) openAssign(path string) tea.Cmd {
+	if err := dotfiles.ValidateStagingPath(m.paths, path); err != nil {
+		return m.setFlash("cannot stage " + m.display(path) + ": " + err.Error())
+	}
+	m.popup = popupAssign
+	m.renaming = ""
+	cmd := m.assignPopup.Open("Assign to a package", m.display(path), path, m.knownPackages(), m.staging[path])
+	m.relayout()
+	return cmd
+}
+
+func (m *Model) openRename(pkg string) tea.Cmd {
+	if pkg == "" {
+		return nil
+	}
+	m.popup = popupAssign
+	cmd := m.assignPopup.OpenRename("Rename package "+pkg, "renames the staged group "+pkg, m.otherPackages(pkg), pkg)
+	m.renaming = pkg
+	m.relayout()
+	return cmd
+}
+
+func (m *Model) applyAssignment(msg popups.AssignedMsg) tea.Cmd {
+	m.popup = popupNone
+	if m.renaming != "" {
+		from := m.renaming
+		m.renaming = ""
+		if msg.Package == from {
+			return nil
+		}
+		for path, pkg := range m.staging {
+			if pkg == from {
+				m.staging[path] = msg.Package
+			}
+		}
+		if m.removeGit[from] {
+			delete(m.removeGit, from)
+			m.removeGit[msg.Package] = true
+		}
+		m.stagingChanged()
+		return m.setFlash("renamed " + from + " to " + msg.Package)
+	}
+	return m.stage(msg.Path, msg.Package)
+}
+
+func (m *Model) stage(path, pkg string) tea.Cmd {
+	if err := dotfiles.ValidateStagingPath(m.paths, path); err != nil {
+		return m.setFlash("cannot stage " + m.display(path) + ": " + err.Error())
+	}
+	if ancestor, ok := stagedAncestor(m.staging, path); ok {
+		return m.setFlash(m.display(path) + " is already covered by " + m.display(ancestor))
+	}
+	dropped := make([]string, 0, len(m.staging))
+	for staged := range m.staging {
+		if pathInside(path, staged) {
+			dropped = append(dropped, staged)
+		}
+	}
+	for _, staged := range dropped {
+		delete(m.staging, staged)
+	}
+	m.staging[path] = pkg
+	m.stagingChanged()
+	if len(dropped) > 0 {
+		return m.setFlash(fmt.Sprintf("staged %s and dropped %s already staged below it",
+			m.display(path), plural(len(dropped), "entry", "entries")))
+	}
+	return m.setFlash("staged " + m.display(path) + " into " + pkg)
+}
+
+func (m *Model) unstage(path string) {
+	if _, ok := m.staging[path]; !ok {
+		return
+	}
+	delete(m.staging, path)
+	m.stagingChanged()
+}
+
+func (m *Model) unstageGroup(pkg string) {
+	for path, staged := range m.staging {
+		if staged == pkg {
+			delete(m.staging, path)
+		}
+	}
+	delete(m.removeGit, pkg)
+	m.stagingChanged()
+}
+
+func (m *Model) toggleRemoveGit(pkg string) {
+	if pkg == "" || !m.mainStaged.HasWarning(pkg) {
+		return
+	}
+	m.removeGit[pkg] = !m.removeGit[pkg]
+	m.stagingChanged()
+}
+
+func (m Model) knownPackages() []string {
+	seen := map[string]bool{}
+	names := make([]string, 0, len(m.pkgs)+len(m.staging))
+	for _, info := range m.pkgs {
+		if !seen[info.name] {
+			seen[info.name] = true
+			names = append(names, info.name)
+		}
+	}
+	for _, pkg := range m.staging {
+		if !seen[pkg] {
+			seen[pkg] = true
+			names = append(names, pkg)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func (m Model) otherPackages(pkg string) []string {
+	names := make([]string, 0, len(m.pkgs))
+	for _, name := range m.knownPackages() {
+		if name != pkg {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func (m Model) display(path string) string {
+	return components.DisplayPath(path, m.home)
+}
+
+func stagedAncestor(staging dotfiles.Staging, path string) (string, bool) {
+	for staged := range staging {
+		if pathInside(staged, path) {
+			return staged, true
+		}
+	}
+	return "", false
+}
+
+func pathInside(root, path string) bool {
+	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
+	if err != nil || rel == "." || rel == ".." {
+		return false
+	}
+	return !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, one)
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }
 
 func (m Model) popupRect() Rect {
@@ -340,9 +655,13 @@ func (m Model) render() string {
 	if !m.layout.KeyBar.Empty() {
 		layers = append(layers, layerAt(m.layout.KeyBar, m.renderKeyBar(m.layout.KeyBar.Width)))
 	}
-	if m.popupOpen {
+	if m.popup != popupNone {
 		if rect := m.popupRect(); !rect.Empty() {
-			layers = append(layers, layerAt(rect, m.keysPopup.View()).Z(1))
+			content := m.keysPopup.View()
+			if m.popup == popupAssign {
+				content = m.assignPopup.View()
+			}
+			layers = append(layers, layerAt(rect, content).Z(1))
 		}
 	}
 	return lipgloss.NewCompositor(layers...).Render()
@@ -376,16 +695,20 @@ func (m Model) renderSide(p PanelID, rect Rect) string {
 }
 
 func (m Model) renderMain(rect Rect) string {
+	panel := m.mainPanel()
 	frame := components.Frame{
-		Title:   m.main.Title(),
-		Counter: m.main.Counter(),
+		Title:   panel.Title(),
+		Counter: panel.Counter(),
 		Focused: m.mainFocused,
 		Styles:  m.st,
 	}
-	return frame.Render(rect.Width, rect.Height, m.main.View())
+	return frame.Render(rect.Width, rect.Height, panel.View())
 }
 
 func (m Model) renderKeyBar(width int) string {
+	if m.flash != "" {
+		return components.Fit(" "+m.st.Warn.Render(m.flash), width)
+	}
 	if m.loadErr != nil {
 		return components.Fit(" "+m.st.Error.Render("cannot read the dotfiles directory: "+m.loadErr.Error()), width)
 	}
@@ -433,7 +756,7 @@ func (m Model) keyBarText() string {
 
 func (m Model) contextKeys() []key.Binding {
 	keys := append([]key.Binding{}, m.focusedPanel().Keys()...)
-	if !m.mainFocused && m.focus == Packages {
+	if !m.mainFocused && m.canFocusMain() {
 		keys = append(keys, m.keys.Enter)
 	}
 	return keys
@@ -451,7 +774,7 @@ func (m Model) globalKeys() []key.Binding {
 }
 
 func (m Model) keySections() []popups.Section {
-	title := m.main.Title()
+	title := m.mainPanel().Title()
 	if !m.mainFocused {
 		title = m.side[m.focus].Title()
 	}

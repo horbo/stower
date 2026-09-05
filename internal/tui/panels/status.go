@@ -1,6 +1,9 @@
 package panels
 
 import (
+	"fmt"
+	"strings"
+
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
@@ -13,6 +16,7 @@ type Status struct {
 	paths       config.Paths
 	home        string
 	stowVersion string
+	staged      int
 	width       int
 	height      int
 	st          styles.Styles
@@ -31,6 +35,10 @@ func (s *Status) Update(tea.Msg) tea.Cmd {
 	return nil
 }
 
+func (s *Status) SetStaged(n int) {
+	s.staged = n
+}
+
 func (s *Status) View() string {
 	dotfiles := components.DisplayPath(s.paths.Dotfiles, s.home)
 	target := components.DisplayPath(s.paths.Target, s.home)
@@ -38,14 +46,24 @@ func (s *Status) View() string {
 	if version == "" {
 		version = "unknown"
 	}
-	arrow := " " + s.st.Accent.Render("→") + " "
-	room := s.width - components.Width("  stow "+version) - 3
-	if room < 8 {
-		return components.Truncate(dotfiles+arrow+target, s.width)
+	staged := ""
+	if s.staged > 0 {
+		staged = fmt.Sprintf("  %d staged", s.staged)
 	}
-	left, right := share(room, components.Width(dotfiles), components.Width(target))
-	return components.TruncateLeft(dotfiles, left) + arrow + components.TruncateLeft(target, right) +
-		"  " + s.st.Dim.Render("stow "+version)
+	arrow := " " + s.st.Accent.Render("→") + " "
+	for _, suffix := range []string{"  stow " + version + staged, staged, ""} {
+		room := s.width - components.Width(suffix) - 3
+		if room < 8 {
+			continue
+		}
+		left, right := share(room, components.Width(dotfiles), components.Width(target))
+		line := components.TruncateLeft(dotfiles, left) + arrow + components.TruncateLeft(target, right)
+		if strings.HasPrefix(suffix, "  stow ") {
+			return line + "  " + s.st.Dim.Render("stow "+version) + s.st.Accent.Render(staged)
+		}
+		return line + s.st.Accent.Render(suffix)
+	}
+	return components.Truncate(dotfiles+arrow+target, s.width)
 }
 
 func share(room, left, right int) (int, int) {
