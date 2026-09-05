@@ -48,6 +48,10 @@ func (k *Keys) Update(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
+func (k *Keys) Scroll(delta int) {
+	k.vp.SetYOffset(k.vp.YOffset() + delta)
+}
+
 func (k *Keys) Title() string {
 	return "Keys"
 }

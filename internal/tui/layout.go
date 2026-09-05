@@ -77,19 +77,25 @@ type Layout struct {
 }
 
 func (l Layout) Rects() []Rect {
-	rects := make([]Rect, 0, SidePanelCount+2)
-	for _, p := range sidePanels {
-		if !l.Side[p].Empty() {
-			rects = append(rects, l.Side[p])
+	rects := make([]Rect, 0, len(hitOrder))
+	for _, p := range hitOrder {
+		if rect := l.Rect(p); !rect.Empty() {
+			rects = append(rects, rect)
 		}
 	}
-	if !l.Main.Empty() {
-		rects = append(rects, l.Main)
-	}
-	if !l.KeyBar.Empty() {
-		rects = append(rects, l.KeyBar)
-	}
 	return rects
+}
+
+func (l Layout) Rect(p PanelID) Rect {
+	switch {
+	case p.IsSide():
+		return l.Side[p]
+	case p == Main:
+		return l.Main
+	case p == KeyBar:
+		return l.KeyBar
+	}
+	return Rect{}
 }
 
 func Compute(w, h int, focus PanelID, mode ScreenMode) Layout {

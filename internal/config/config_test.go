@@ -194,6 +194,31 @@ func TestResolveMakesRelativePathsAbsolute(t *testing.T) {
 	}
 }
 
+func TestMouseEnabled(t *testing.T) {
+	tests := []struct {
+		name string
+		flag bool
+		env  string
+		want bool
+	}{
+		{name: "enabled by default", want: true},
+		{name: "flag disables", flag: true, want: false},
+		{name: "env 1 disables", env: "1", want: false},
+		{name: "env true disables", env: "TRUE", want: false},
+		{name: "env 0 keeps it enabled", env: "0", want: true},
+		{name: "env off keeps it enabled", env: " off ", want: true},
+		{name: "flag wins over env", flag: true, env: "0", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			env := envFrom(map[string]string{EnvNoMouse: test.env})
+			if got := MouseEnabled(test.flag, env); got != test.want {
+				t.Fatalf("MouseEnabled(%v, %q) = %v, want %v", test.flag, test.env, got, test.want)
+			}
+		})
+	}
+}
+
 func evalSymlinks(t *testing.T, path string) string {
 	t.Helper()
 	resolved, err := filepath.EvalSymlinks(path)

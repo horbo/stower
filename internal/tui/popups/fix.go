@@ -16,6 +16,8 @@ type Fix struct {
 	st                    styles.Styles
 }
 
+const fixOptionRow = 2
+
 func NewFix(st styles.Styles) *Fix     { return &Fix{st: st} }
 func (p *Fix) Open(issue doctor.Issue) { p.issue = issue; p.cursor = 2 }
 func (p *Fix) SetSize(w, h int)        { p.width, p.height = w, h }
@@ -42,6 +44,24 @@ func (p *Fix) Update(msg tea.Msg) tea.Cmd {
 		return func() tea.Msg { return FixChosenMsg{Action: action} }
 	}
 	return nil
+}
+func (p *Fix) Click(x, y int) tea.Cmd {
+	row := y - fixOptionRow
+	if row < 0 || row > 2 {
+		return nil
+	}
+	if row != p.cursor {
+		p.cursor = row
+		return nil
+	}
+	if row == 2 {
+		return func() tea.Msg { return FixCancelledMsg{} }
+	}
+	action := doctor.KeepTarget
+	if row == 1 {
+		action = doctor.KeepRepo
+	}
+	return func() tea.Msg { return FixChosenMsg{Action: action} }
 }
 func (p *Fix) View() string {
 	width := components.InnerWidth(p.width)

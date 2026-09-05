@@ -384,7 +384,12 @@ for example), and the doctor blocks the whole plan while any entry of the packag
 
 Mouse support (M8): click to focus and select, wheel to scroll, clicks in popups, gated by
 `--no-mouse` / `STOWER_NO_MOUSE` so terminal text selection stays available. Hit-testing goes
-through `Layout.Rects()` and a `Click(x, y)` method on panels that own a cursor.
+through `Layout.Rects()` and a `Click(x, y)` method on panels that own a cursor. A click into
+an unfocused panel moves the cursor and focus but never activates (`enter`); a click on the
+already highlighted row of a focused panel does. The wheel scrolls the panel under the pointer
+by three rows without changing focus. Popups whose choice starts an operation without a further
+confirmation (Fix, First run) take two clicks: the first highlights the option, the second
+performs it; a click outside a popup closes it like `esc`, except First run where `esc` quits.
 
 ## v1.3
 

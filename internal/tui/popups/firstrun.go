@@ -38,6 +38,8 @@ func defaultFirstRunKeyMap() firstRunKeyMap {
 	}
 }
 
+const firstRunOptionRow = 3
+
 type FirstRun struct {
 	dir       string
 	offer     bool
@@ -101,6 +103,22 @@ func (f *FirstRun) Update(msg tea.Msg) tea.Cmd {
 	case key.Matches(pressed, f.keys.Toggle):
 		f.toggle()
 	}
+	return nil
+}
+
+func (f *FirstRun) Click(x, y int) tea.Cmd {
+	if f.offer {
+		return nil
+	}
+	row := y - firstRunOptionRow
+	if row < 0 || row > 2 {
+		return nil
+	}
+	if row != f.cursor {
+		f.cursor = row
+		return nil
+	}
+	f.toggle()
 	return nil
 }
 

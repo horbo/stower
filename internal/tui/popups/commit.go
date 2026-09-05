@@ -131,6 +131,25 @@ func (c *Commit) Update(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
+func (c *Commit) Click(x, y int) tea.Cmd {
+	if c.editing || y != c.messageRow() {
+		return nil
+	}
+	c.editing = true
+	c.failed = ""
+	cmd := c.input.Focus()
+	c.input.CursorEnd()
+	return cmd
+}
+
+func (c *Commit) Scroll(delta int) {
+	c.vp.SetYOffset(c.vp.YOffset() + delta)
+}
+
+func (c *Commit) messageRow() int {
+	return strings.Count(c.vp.View(), "\n") + 1
+}
+
 func (c *Commit) commit() tea.Cmd {
 	subject := c.Subject()
 	if subject == "" {

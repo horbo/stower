@@ -14,11 +14,14 @@ const (
 	Staged
 	Issues
 	Main
+	KeyBar
 )
 
 const SidePanelCount = 5
 
 var sidePanels = [SidePanelCount]PanelID{Status, Packages, Home, Staged, Issues}
+
+var hitOrder = [SidePanelCount + 2]PanelID{Status, Packages, Home, Staged, Issues, Main, KeyBar}
 
 func (p PanelID) IsSide() bool {
 	return p >= Status && p <= Issues
@@ -38,6 +41,8 @@ func (p PanelID) String() string {
 		return "Issues"
 	case Main:
 		return "Main"
+	case KeyBar:
+		return "KeyBar"
 	default:
 		return "unknown"
 	}

@@ -278,6 +278,40 @@ func (t *Tree) collapseSelected() {
 	}
 }
 
+func (t *Tree) Click(y int) {
+	if t.filtering && y >= t.visibleHeight() {
+		return
+	}
+	row, ok := RowAt(t.offset, y, len(t.rows))
+	if !ok {
+		return
+	}
+	if row == t.cursor {
+		t.toggleSelected()
+		return
+	}
+	t.cursor = row
+	t.clampOffset()
+}
+
+func (t *Tree) Scroll(delta int) {
+	t.move(delta)
+}
+
+func (t *Tree) toggleSelected() {
+	row, ok := t.Selected()
+	if !ok || !row.Node.Expandable {
+		return
+	}
+	if t.expanded[row.Node.Path] {
+		delete(t.expanded, row.Node.Path)
+		t.rebuild()
+		return
+	}
+	t.expand(row.Node.Path)
+	t.rebuild()
+}
+
 func (t *Tree) expand(path string) {
 	t.load(path)
 	if t.errs[path] != nil {

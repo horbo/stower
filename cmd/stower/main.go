@@ -38,6 +38,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	flags.SetOutput(stderr)
 	dotfilesDir := flags.String("dotfiles", "", "dotfiles repository directory (default ~/dotfiles, or $STOWER_DOTFILES)")
 	target := flags.String("target", "", "directory stow links into (default $HOME)")
+	noMouse := flags.Bool("no-mouse", false, "disable mouse reporting so the terminal keeps its own text selection (also $STOWER_NO_MOUSE)")
 	showVersion := flags.Bool("version", false, "print the version and exit")
 
 	if err := flags.Parse(args); err != nil {
@@ -86,7 +87,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		}
 		return errors.Join(failures...)
 	}
-	program := tea.NewProgram(tui.New(paths, stowVersion), tea.WithOutput(stdout))
+	model := tui.New(paths, stowVersion).WithMouse(config.MouseEnabled(*noMouse, os.Getenv))
+	program := tea.NewProgram(model, tea.WithOutput(stdout))
 	_, err = program.Run()
 	return err
 }

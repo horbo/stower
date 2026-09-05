@@ -146,6 +146,7 @@ type Model struct {
 	focus       PanelID
 	mainFocused bool
 	mode        ScreenMode
+	mouse       bool
 
 	side           [SidePanelCount]Panel
 	status         *panels.Status
@@ -210,6 +211,7 @@ func New(paths config.Paths, stowVersion string) Model {
 		keys:          defaultKeyMap(),
 		focus:         Packages,
 		mode:          ModeNormal,
+		mouse:         true,
 		status:        panels.NewStatus(paths, home, stowVersion, st),
 		packages:      panels.NewPackages(st),
 		homePanel:     panels.NewHome(paths, home, st),
@@ -239,6 +241,11 @@ func New(paths config.Paths, stowVersion string) Model {
 	m.status.SetGit(m.git.repo, len(m.git.dirty))
 	m.openFirstRun()
 	m.rebuildPlan()
+	return m
+}
+
+func (m Model) WithMouse(enabled bool) Model {
+	m.mouse = enabled
 	return m
 }
 
@@ -370,8 +377,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.finishExecution(msg.summary)
 	case spinner.TickMsg:
 		return m, m.status.Update(msg)
+	case panels.ActivateMsg:
+		return m.activate()
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
 	}
 	return m, m.focusedPanel().Update(msg)
 }
@@ -550,6 +561,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	cmd := m.focusedPanel().Update(msg)
 	m.syncMain()
 	return m, cmd
+}
+
+func (m Model) activate() (tea.Model, tea.Cmd) {
+	return m.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 }
 
 func nextSide(focus PanelID) PanelID {
@@ -910,6 +925,9 @@ func (m Model) popupRect() Rect {
 func (m Model) View() tea.View {
 	view := tea.NewView(m.render())
 	view.AltScreen = true
+	if m.mouse {
+		view.MouseMode = tea.MouseModeCellMotion
+	}
 	return view
 }
 
@@ -1006,46 +1024,23 @@ func (m Model) renderKeyBar(width int) string {
 	if m.loadErr != nil {
 		return components.Fit(" "+m.st.Error.Render("cannot read the dotfiles directory: "+m.loadErr.Error()), width)
 	}
-	if m.layout.TabStrip {
-		return components.Fit(" "+m.tabStrip()+"   "+m.shortKeys(), width)
+	var b strings.Builder
+	b.WriteString(" ")
+	for _, item := range m.keyBarItems() {
+		b.WriteString(strings.Repeat(" ", item.gap))
+		b.WriteString(m.renderBarItem(item))
 	}
-	return components.Fit(" "+m.keyBarText(), width)
+	return components.Fit(b.String(), width)
 }
 
-func (m Model) tabStrip() string {
-	parts := make([]string, 0, SidePanelCount)
-	for _, p := range sidePanels {
-		label := "[" + string(rune('0'+int(p))) + "]" + p.String()
-		if !m.mainFocused && m.focus == p {
-			parts = append(parts, m.st.TabActive.Render(label))
-			continue
-		}
-		parts = append(parts, m.st.TabInactive.Render(label))
+func (m Model) renderBarItem(item barItem) string {
+	if !item.tab {
+		return m.st.KeyName.Render(item.key) + " " + item.desc
 	}
-	return strings.Join(parts, " ")
-}
-
-func (m Model) shortKeys() string {
-	return m.st.KeyName.Render("?") + " keys  " + m.st.KeyName.Render("+") + " mode  " + m.st.KeyName.Render("q") + " quit"
-}
-
-func (m Model) keyBarText() string {
-	parts := make([]string, 0, 8)
-	for _, binding := range m.contextKeys() {
-		help := binding.Help()
-		if !binding.Enabled() || help.Key == "" {
-			continue
-		}
-		parts = append(parts, m.st.KeyName.Render(help.Key)+" "+help.Desc)
+	if !m.mainFocused && m.focus == item.panel {
+		return m.st.TabActive.Render(item.label())
 	}
-	for _, binding := range m.globalKeys() {
-		help := binding.Help()
-		if help.Key == "" {
-			continue
-		}
-		parts = append(parts, m.st.KeyName.Render(help.Key)+" "+help.Desc)
-	}
-	return strings.Join(parts, "  ")
+	return m.st.TabInactive.Render(item.label())
 }
 
 func (m Model) contextKeys() []key.Binding {

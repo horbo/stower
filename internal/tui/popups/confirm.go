@@ -31,6 +31,12 @@ func defaultConfirmKeyMap() confirmKeyMap {
 	}
 }
 
+const (
+	confirmHint = "y / enter confirm"
+	cancelHint  = "n / esc cancel"
+	hintGap     = "    "
+)
+
 type Confirm struct {
 	action string
 	title  string
@@ -87,6 +93,28 @@ func (c *Confirm) Update(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
+func (c *Confirm) Click(x, y int) tea.Cmd {
+	if y != c.promptRow() {
+		return nil
+	}
+	action := c.action
+	switch {
+	case x >= 0 && x < components.Width(confirmHint):
+		return func() tea.Msg { return ConfirmedMsg{Action: action} }
+	case x >= components.Width(confirmHint+hintGap) && x < components.Width(confirmHint+hintGap+cancelHint):
+		return func() tea.Msg { return ConfirmCancelledMsg{Action: action} }
+	}
+	return nil
+}
+
+func (c *Confirm) Scroll(delta int) {
+	c.vp.SetYOffset(c.vp.YOffset() + delta)
+}
+
+func (c *Confirm) promptRow() int {
+	return strings.Count(c.vp.View(), "\n") + 1
+}
+
 func (c *Confirm) Title() string {
 	if c.title == "" {
 		return "Confirm"
@@ -97,7 +125,7 @@ func (c *Confirm) Title() string {
 func (c *Confirm) View() string {
 	frame := components.Frame{Title: c.Title(), Counter: "y confirm · n cancel", Focused: true, Styles: c.st}
 	inner := components.InnerWidth(c.width)
-	prompt := c.st.Accent.Render(components.Truncate("y / enter confirm    n / esc cancel", inner))
+	prompt := c.st.Accent.Render(components.Truncate(confirmHint+hintGap+cancelHint, inner))
 	return frame.Render(c.width, c.height, c.vp.View()+"\n"+prompt)
 }
 

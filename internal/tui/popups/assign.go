@@ -122,6 +122,32 @@ func (a *Assign) Update(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
+func (a *Assign) Click(x, y int) tea.Cmd {
+	first := a.firstRow()
+	input := first + max(len(a.packages), 1) + 1
+	switch {
+	case y == input:
+		if a.onInput() {
+			return nil
+		}
+		return a.move(len(a.packages) - a.cursor)
+	case y >= first && y < first+len(a.packages):
+		row := y - first
+		if row == a.cursor {
+			return a.confirm()
+		}
+		return a.move(row - a.cursor)
+	}
+	return nil
+}
+
+func (a *Assign) firstRow() int {
+	if a.subtitle != "" {
+		return 2
+	}
+	return 0
+}
+
 func (a *Assign) confirm() tea.Cmd {
 	name := a.selection()
 	if err := dotfiles.ValidatePackageName(name); err != nil {

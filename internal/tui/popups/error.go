@@ -61,6 +61,10 @@ func (e *Error) Update(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
+func (e *Error) Scroll(delta int) {
+	e.vp.SetYOffset(e.vp.YOffset() + delta)
+}
+
 func (e *Error) Title() string {
 	if e.title == "" {
 		return "Error"

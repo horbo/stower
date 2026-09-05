@@ -101,6 +101,16 @@ func (p *Package) Update(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
+func (p *Package) Click(x, y int) tea.Cmd {
+	line, ok := components.RowAt(p.vp.YOffset(), y, len(p.entries)+1)
+	if !ok || line == 0 {
+		return nil
+	}
+	p.cursor = line - 1
+	p.render()
+	return nil
+}
+
 func (p *Package) View() string {
 	if p.width <= 0 || p.height <= 0 {
 		return ""

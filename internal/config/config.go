@@ -9,7 +9,10 @@ import (
 	"strings"
 )
 
-const EnvDotfiles = "STOWER_DOTFILES"
+const (
+	EnvDotfiles = "STOWER_DOTFILES"
+	EnvNoMouse  = "STOWER_NO_MOUSE"
+)
 
 type Paths struct {
 	Target   string
@@ -54,6 +57,21 @@ func Resolve(flagDotfiles, flagTarget string, env func(string) string) (Paths, e
 	}
 
 	return Paths{Target: resolvedTarget, Dotfiles: resolvedDotfiles}, nil
+}
+
+func MouseEnabled(flagNoMouse bool, env func(string) string) bool {
+	if flagNoMouse {
+		return false
+	}
+	if env == nil {
+		env = os.Getenv
+	}
+	switch strings.ToLower(strings.TrimSpace(env(EnvNoMouse))) {
+	case "", "0", "false", "no", "off":
+		return true
+	default:
+		return false
+	}
 }
 
 func normalize(path, home string) (string, error) {

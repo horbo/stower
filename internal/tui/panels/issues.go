@@ -40,6 +40,7 @@ func (p *Issues) Selected() (doctor.Issue, bool) {
 	return p.items[p.cursor], true
 }
 func (p *Issues) SetSize(w, h int) { p.width, p.height = w, h }
+func (p *Issues) offset() int      { return max(0, p.cursor-max(1, p.height)+1) }
 func (p *Issues) Update(msg tea.Msg) tea.Cmd {
 	if k, ok := msg.(tea.KeyPressMsg); ok {
 		switch k.String() {
@@ -59,7 +60,7 @@ func (p *Issues) View() string {
 	if len(p.items) == 0 {
 		return p.st.Dim.Render(components.Truncate("(no issues)", p.width))
 	}
-	start := max(0, p.cursor-max(1, p.height)+1)
+	start := p.offset()
 	var lines []string
 	for i := start; i < min(len(p.items), start+max(1, p.height)); i++ {
 		item := p.items[i]
