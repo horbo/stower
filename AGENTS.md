@@ -26,7 +26,10 @@ and link them back with stow, restore them, inspect link health, commit to git.
   Every test and manual scenario uses temporary directories passed via `--target`
   and `--dotfiles`.
 - Never edit `docs/milestones/STATUS.md`. The coordinating session owns it.
-- Do not commit unless explicitly asked. Commit messages are a subject line only.
+- Do not commit unless explicitly asked. Commit messages follow Conventional Commits:
+  `type(scope): summary`, for example `fix(tui): keep the log open while apply runs`. The
+  scope is optional. Types in use: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `ci`.
+  The subject line is the whole message: no body, no bullet list, no trailing footer.
 - Keep the domain layer (`internal/dotfiles`, `internal/stow`, `internal/doctor`,
   `internal/gitx`) free of any TUI import.
 - Always call stow with explicit `-d <dotfiles> -t <target>` and `--dotfiles`; never rely

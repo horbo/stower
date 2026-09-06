@@ -7,6 +7,8 @@ them into the repository and links them back with `stow --dotfiles`, restores th
 link health and commits to git. It never creates or removes symlinks itself: every link
 operation is delegated to the `stow` binary.
 
+![stower staging a file from the home directory, applying the plan and fixing a broken link](docs/assets/demo.gif)
+
 ## Requirements
 
 - macOS or Linux.
@@ -102,6 +104,13 @@ mkdir -p "$FAKE/.config/foo" && echo x > "$FAKE/.bar"
 stower --target "$FAKE" --dotfiles "$FAKE/dotfiles"
 ```
 
+## Screenshots
+
+|  |  |
+| :-- | :-- |
+| **Overview** — packages, the home tree, the staged plan and link issues in one layout.<br>![Overview](docs/assets/overview.png) | **Staging** — highlight anything under `$HOME` and see the package path and link it would get.<br>![Home panel](docs/assets/home.png) |
+| **Staged plan** — every `mv` and every `stow` invocation, shown before a single file moves.<br>![Staged plan](docs/assets/staged.png) | **Issues** — link health per entry, with a one-key fix for the repairable ones.<br>![Issues](docs/assets/issues.png) |
+
 ## Command line
 
 ```
@@ -141,6 +150,16 @@ the terminal's own text selection.
 make check
 go test -race ./internal/...
 ```
+
+The GIF and the screenshots are recorded with [VHS](https://github.com/charmbracelet/vhs):
+
+```sh
+make demo
+```
+
+`docs/assets/fixture.sh` builds the throwaway home under `/tmp/stower-demo` that the
+recording drives, and `docs/assets/demo.tape` is the script. Neither touches the real
+`$HOME`.
 
 The design and the domain rules live in `docs/DESIGN.md`; milestones and their status in
 `docs/milestones/`; the release procedure in `docs/RELEASING.md`.
