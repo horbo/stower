@@ -170,6 +170,65 @@ func TestTreeFilterAndCursorClamping(t *testing.T) {
 	}
 }
 
+func TestExpandClearsTheFilter(t *testing.T) {
+	cases := []struct {
+		name string
+		key  string
+	}{
+		{"enter", "enter"},
+		{"right", "right"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tree := newTestTree(t, nil)
+			press(tree, "/", "c", "o", "n", "f", "i", "g", "enter", c.key)
+
+			if tree.Filter() != "" {
+				t.Fatalf("filter = %q, want empty after expand", tree.Filter())
+			}
+			if tree.Filtering() {
+				t.Fatal("expand left the tree in filtering mode")
+			}
+			want := []string{"/t", "/t/config", "/t/config/nvim", "/t/config/gh", "/t/bin", "/t/managed", "/t/zshrc"}
+			if got := paths(tree); !equal(got, want) {
+				t.Fatalf("rows after expand = %v, want %v", got, want)
+			}
+			row, _ := tree.Selected()
+			if row.Node.Path != "/t/config" {
+				t.Fatalf("cursor is on %q, want /t/config", row.Node.Path)
+			}
+		})
+	}
+}
+
+func TestExpandOnAnAlreadyExpandedNodeKeepsTheFilter(t *testing.T) {
+	tree := newTestTree(t, nil)
+	press(tree, "j", "right")
+
+	press(tree, "/", "i")
+	want := []string{"/t/config", "/t/config/nvim", "/t/bin"}
+	if got := paths(tree); !equal(got, want) {
+		t.Fatalf("filtered rows = %v, want %v", got, want)
+	}
+
+	press(tree, "enter")
+	if tree.Filtering() {
+		t.Fatal("enter did not leave the filter input")
+	}
+
+	press(tree, "enter")
+	if tree.Filter() != "i" {
+		t.Fatalf("expanding an already expanded node cleared the filter: %q", tree.Filter())
+	}
+	if got := paths(tree); !equal(got, want) {
+		t.Fatalf("rows changed after re-expanding: %v, want %v", got, want)
+	}
+	row, _ := tree.Selected()
+	if row.Node.Path != "/t/config/nvim" {
+		t.Fatalf("cursor is on %q, want /t/config/nvim", row.Node.Path)
+	}
+}
+
 func TestTreeKeepsTheCursorOnTheSameNodeAcrossRebuilds(t *testing.T) {
 	tree := newTestTree(t, nil)
 	press(tree, "j", "j")

@@ -296,6 +296,16 @@ func (t *Tree) move(delta int) {
 	t.clampOffset()
 }
 
+func (t *Tree) clearFilter() {
+	if t.filter == "" && !t.filtering {
+		return
+	}
+	t.filtering = false
+	t.input.Blur()
+	t.input.SetValue("")
+	t.filter = ""
+}
+
 func (t *Tree) expandSelected() tea.Cmd {
 	row, ok := t.Selected()
 	if !ok || !row.Node.Expandable {
@@ -307,6 +317,7 @@ func (t *Tree) expandSelected() tea.Cmd {
 		}
 		return nil
 	}
+	t.clearFilter()
 	cmd := t.expand(row.Node.Path)
 	t.rebuild()
 	return cmd
@@ -361,6 +372,7 @@ func (t *Tree) toggleSelected() tea.Cmd {
 		t.rebuild()
 		return nil
 	}
+	t.clearFilter()
 	cmd := t.expand(row.Node.Path)
 	t.rebuild()
 	return cmd
