@@ -110,7 +110,7 @@ func newDeepHomeModel(tb testing.TB, depth, breadth, expandLevels int) Model {
 
 func BenchmarkHomeCursorMoveFlat(b *testing.B) {
 	m := newFlatHomeModel(b, 5000)
-	m.inspectHomeEntry = func(context.Context, string) mainpanel.EntryFacts { return mainpanel.EntryFacts{} }
+	m.inspectHomeEntry = func(context.Context, config.Paths, string) mainpanel.EntryFacts { return mainpanel.EntryFacts{} }
 	msg := tea.KeyPressMsg{Code: []rune("j")[0], Text: "j"}
 
 	b.ResetTimer()
@@ -122,7 +122,7 @@ func BenchmarkHomeCursorMoveFlat(b *testing.B) {
 
 func BenchmarkHomeCursorMoveDeep(b *testing.B) {
 	m := newDeepHomeModel(b, 6, 8, 4)
-	m.inspectHomeEntry = func(context.Context, string) mainpanel.EntryFacts { return mainpanel.EntryFacts{} }
+	m.inspectHomeEntry = func(context.Context, config.Paths, string) mainpanel.EntryFacts { return mainpanel.EntryFacts{} }
 	msg := tea.KeyPressMsg{Code: []rune("j")[0], Text: "j"}
 
 	b.ResetTimer()
@@ -135,7 +135,7 @@ func BenchmarkHomeCursorMoveDeep(b *testing.B) {
 func TestHomeCursorMoveDoesNotScan(t *testing.T) {
 	m := newFlatHomeModel(t, 5000)
 	var inspectCalls int
-	m.inspectHomeEntry = func(context.Context, string) mainpanel.EntryFacts {
+	m.inspectHomeEntry = func(context.Context, config.Paths, string) mainpanel.EntryFacts {
 		inspectCalls++
 		return mainpanel.EntryFacts{}
 	}

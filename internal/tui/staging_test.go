@@ -411,6 +411,9 @@ func TestStagedPanelUnstageAndRename(t *testing.T) {
 	model = moveTo(t, model, filepath.Join(paths.Target, ".bar"))
 	model = send(t, model, "space")
 	model = typeName(t, model, "misc")
+	if model.(Model).layout.Collapsed[Staged] {
+		t.Fatal("staging an entry did not expand the staged panel")
+	}
 
 	model = send(t, model, "3", "e")
 	if model.(Model).popup != popupAssign {
@@ -429,9 +432,25 @@ func TestStagedPanelUnstageAndRename(t *testing.T) {
 	if len(model.(Model).staging) != 0 {
 		t.Fatalf("u did not unstage the entry: %v", model.(Model).staging)
 	}
-	if !strings.Contains(ansi.Strip(model.View().Content), "(nothing staged)") {
-		t.Fatal("the staged panel does not show the empty state")
+	m := model.(Model)
+	if !m.layout.Collapsed[Staged] {
+		t.Fatal("the empty staged panel is not collapsed")
 	}
+	title := stagedTitleLine(t, ansi.Strip(model.View().Content))
+	if !strings.Contains(title, "nothing staged") {
+		t.Fatalf("the staged title does not show the empty state: %q", title)
+	}
+}
+
+func stagedTitleLine(t *testing.T, screen string) string {
+	t.Helper()
+	for _, line := range strings.Split(screen, "\n") {
+		if strings.Contains(line, "[3] Staged") {
+			return line
+		}
+	}
+	t.Fatalf("the screen has no staged title line:\n%s", screen)
+	return ""
 }
 
 func TestCancellingARenameDoesNotAffectTheNextAssignment(t *testing.T) {

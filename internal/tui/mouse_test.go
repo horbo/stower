@@ -160,10 +160,10 @@ func TestClickMovesFocusBetweenPanels(t *testing.T) {
 }
 
 func TestClickCollapsedPanelExpandsIt(t *testing.T) {
-	model, _ := resize(t, newTestModel(t), 100, 24)
+	model, _ := resize(t, newTestModel(t), 100, 20)
 	m := model.(Model)
 	if !m.layout.Collapsed[Issues] {
-		t.Fatal("Issues must be collapsed at 100x24 with Packages focused")
+		t.Fatal("Issues must be collapsed at 100x20 with Packages focused")
 	}
 	rect := m.layout.Rect(Issues)
 	model = click(t, model, rect.X+2, rect.Y)
@@ -255,6 +255,16 @@ func TestKeyBarClickSendsTheKey(t *testing.T) {
 	after := click(t, model, move.x, before.layout.KeyBar.Y).(Model)
 	if after.focus != before.focus || after.mainFocused != before.mainFocused {
 		t.Fatal("clicking a multi-key label changed the model")
+	}
+
+	wider, ok := barItemByKey(items, "+/-")
+	if !ok {
+		t.Fatal("the key bar has no +/- item")
+	}
+	before = after
+	after = click(t, model, wider.x, before.layout.KeyBar.Y).(Model)
+	if after.mode != before.mode {
+		t.Fatal("clicking the +/- label changed the mode")
 	}
 }
 

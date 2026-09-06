@@ -364,3 +364,38 @@ func TestUnownedFixUI(t *testing.T) {
 		}
 	}
 }
+
+func fixReplacedFromPackageEntries(t *testing.T) Model {
+	t.Helper()
+	if _, err := exec.LookPath("stow"); err != nil {
+		t.Fatal(err)
+	}
+	model, _ := resize(t, newReplacedModel(t), 100, 30)
+	m := focusPackage(t, model.(Model), "misc")
+	m = press(t, m, "f").(Model)
+	if m.popup != popupFix {
+		t.Fatalf("f in the package entries opened popup %d, want the fix popup", m.popup)
+	}
+	updated, cmd := m.Update(popups.FixChosenMsg{Action: doctor.KeepTarget})
+	m = completeOperation(t, updated.(Model), cmd)
+	if !m.logOpen || m.mainContext() != contextLog {
+		t.Fatalf("logOpen=%v context=%v, want the finished log on screen", m.logOpen, m.mainContext())
+	}
+	return m
+}
+
+func TestFinishedLogReturnsToPackageEntries(t *testing.T) {
+	for _, closeKey := range []string{"enter", "esc"} {
+		t.Run(closeKey, func(t *testing.T) {
+			m := fixReplacedFromPackageEntries(t)
+			m = press(t, m, closeKey).(Model)
+			if m.logOpen {
+				t.Fatalf("%s did not close the finished log", closeKey)
+			}
+			if m.focus != Packages || !m.mainFocused || m.mainContext() != contextPackage {
+				t.Fatalf("%s left focus=%v mainFocused=%v context=%v, want the package entries",
+					closeKey, m.focus, m.mainFocused, m.mainContext())
+			}
+		})
+	}
+}

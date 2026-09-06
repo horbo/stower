@@ -237,3 +237,31 @@ func TestConfirmCancelAndErrorPopup(t *testing.T) {
 		t.Fatal("error popup did not close")
 	}
 }
+
+func TestFinishedLogEnterReturnsToStaged(t *testing.T) {
+	m := runApply(t, prepareApply(t))
+	if !m.logOpen {
+		t.Fatal("apply did not leave the log open")
+	}
+	m = press(t, m, "enter").(Model)
+	if m.logOpen {
+		t.Fatal("enter did not close the finished log")
+	}
+	if m.focus != Staged || m.mainFocused {
+		t.Fatalf("focus=%v mainFocused=%v, want the Staged side panel", m.focus, m.mainFocused)
+	}
+}
+
+func TestTabOnFinishedLogClosesItAndMovesOn(t *testing.T) {
+	m := runApply(t, prepareApply(t))
+	m = press(t, m, "tab").(Model)
+	if m.logOpen || m.mainFocused {
+		t.Fatalf("tab left logOpen=%v mainFocused=%v", m.logOpen, m.mainFocused)
+	}
+	if m.focus != nextSide(Staged) {
+		t.Fatalf("focus=%v, want %v", m.focus, nextSide(Staged))
+	}
+	if m.logReturn.valid {
+		t.Fatal("tab kept a stale log return target")
+	}
+}

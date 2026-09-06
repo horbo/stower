@@ -23,10 +23,44 @@ var testModes = []ScreenMode{ModeNormal, ModeHalf, ModeFullscreen}
 
 var testFocus = []PanelID{Status, Packages, Home, Staged, Issues, Main}
 
+var testEmpty = []struct {
+	name  string
+	empty [SidePanelCount]bool
+}{
+	{name: "full"},
+	{name: "staged", empty: emptyPanels(Staged)},
+	{name: "issues", empty: emptyPanels(Issues)},
+	{name: "both", empty: emptyPanels(Staged, Issues)},
+}
+
+func emptyPanels(ids ...PanelID) [SidePanelCount]bool {
+	var empty [SidePanelCount]bool
+	for _, id := range ids {
+		empty[id] = true
+	}
+	return empty
+}
+
 func TestComputeTilesTheScreen(t *testing.T) {
 	for _, size := range testSizes {
 		for _, mode := range testModes {
 			for _, focus := range testFocus {
+				for _, empty := range testEmpty {
+					name := fmt.Sprintf("%dx%d/%s/%s/%s", size.w, size.h, mode, focus, empty.name)
+					t.Run(name, func(t *testing.T) {
+						l := ComputeWith(size.w, size.h, focus, mode, empty.empty)
+						if l.TooSmall {
+							if size.w >= MinWidth && size.h >= MinHeight {
+								t.Fatalf("unexpected TooSmall at %dx%d", size.w, size.h)
+							}
+							if len(l.Rects()) != 0 {
+								t.Fatalf("TooSmall layout has %d rectangles", len(l.Rects()))
+							}
+							return
+						}
+						assertTiles(t, l, size.w, size.h)
+					})
+				}
 				name := fmt.Sprintf("%dx%d/%s/%s", size.w, size.h, mode, focus)
 				t.Run(name, func(t *testing.T) {
 					l := Compute(size.w, size.h, focus, mode)
@@ -213,4 +247,67 @@ func TestScreenModeCycle(t *testing.T) {
 	if got := ModeNormal.Prev(); got != ModeFullscreen {
 		t.Fatalf("prev of normal = %s", got)
 	}
+}
+
+func TestComputeCollapsesEmptyPanels(t *testing.T) {
+	empty := emptyPanels(Staged, Issues)
+
+	base := Compute(100, 30, Packages, ModeNormal)
+	l := ComputeWith(100, 30, Packages, ModeNormal, empty)
+	if !l.Collapsed[Staged] || !l.Collapsed[Issues] {
+		t.Fatalf("empty panels are not collapsed: staged %d, issues %d", l.Side[Staged].Height, l.Side[Issues].Height)
+	}
+	for _, p := range []PanelID{Staged, Issues} {
+		if l.Side[p].Height != CollapsedRows {
+			t.Fatalf("%s height = %d, want %d", p, l.Side[p].Height, CollapsedRows)
+		}
+	}
+	for _, p := range []PanelID{Packages, Home} {
+		if l.Collapsed[p] {
+			t.Fatalf("%s must not be collapsed", p)
+		}
+		if l.Side[p].Height <= base.Side[p].Height {
+			t.Fatalf("%s height = %d, want more than %d", p, l.Side[p].Height, base.Side[p].Height)
+		}
+	}
+	assertTiles(t, l, 100, 30)
+
+	tight := ComputeWith(100, 24, Packages, ModeNormal, empty)
+	rest := 24 - KeyBarHeight - StatusHeight
+	want := (rest - 2*CollapsedRows) / 2
+	for _, p := range []PanelID{Packages, Home} {
+		if tight.Collapsed[p] || tight.Side[p].Height != want {
+			t.Fatalf("%s height = %d, want an even split of %d", p, tight.Side[p].Height, want)
+		}
+	}
+	if !tight.Collapsed[Staged] || !tight.Collapsed[Issues] {
+		t.Fatal("100x24 with two empty panels must keep them collapsed")
+	}
+	assertTiles(t, tight, 100, 24)
+
+	focused := ComputeWith(100, 30, Issues, ModeNormal, empty)
+	if !focused.Collapsed[Issues] {
+		t.Fatal("a focused empty panel must stay collapsed")
+	}
+	if focused.Expanded != Packages {
+		t.Fatalf("expanded panel = %s, want Packages", focused.Expanded)
+	}
+	assertTiles(t, focused, 100, 30)
+
+	accordion := ComputeWith(100, 24, Packages, ModeNormal, [SidePanelCount]bool{})
+	if accordion != Compute(100, 24, Packages, ModeNormal) {
+		t.Fatal("without empty panels the layout must not change")
+	}
+
+	narrow := ComputeWith(100, 17, Packages, ModeNormal, empty)
+	body := 17 - KeyBarHeight - StatusHeight
+	if narrow.Side[Packages].Height != body-3*CollapsedRows {
+		t.Fatalf("100x17 must still use the accordion: packages height = %d", narrow.Side[Packages].Height)
+	}
+	for _, p := range []PanelID{Home, Staged, Issues} {
+		if !narrow.Collapsed[p] {
+			t.Fatalf("%s must be collapsed in the accordion", p)
+		}
+	}
+	assertTiles(t, narrow, 100, 17)
 }

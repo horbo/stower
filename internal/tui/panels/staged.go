@@ -301,7 +301,14 @@ func (p *Staged) Title() string {
 	return "[3] Staged"
 }
 
+func (p *Staged) Len() int {
+	return len(p.rows)
+}
+
 func (p *Staged) Counter() string {
+	if len(p.rows) == 0 {
+		return "nothing staged"
+	}
 	if p.items == 0 {
 		return ""
 	}

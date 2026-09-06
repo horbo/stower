@@ -99,6 +99,10 @@ func (l Layout) Rect(p PanelID) Rect {
 }
 
 func Compute(w, h int, focus PanelID, mode ScreenMode) Layout {
+	return ComputeWith(w, h, focus, mode, [SidePanelCount]bool{})
+}
+
+func ComputeWith(w, h int, focus PanelID, mode ScreenMode, empty [SidePanelCount]bool) Layout {
 	l := Layout{Width: w, Height: h, Mode: mode, Focus: focus}
 	if w < MinWidth || h < MinHeight {
 		l.TooSmall = true
@@ -116,7 +120,7 @@ func Compute(w, h int, focus PanelID, mode ScreenMode) Layout {
 	case l.Portrait:
 		layoutPortrait(&l, w, body, focus, mode)
 	default:
-		layoutLandscape(&l, w, body, mode)
+		layoutLandscape(&l, w, body, mode, empty)
 	}
 	return l
 }
@@ -167,13 +171,21 @@ func portraitTopHeight(body int, focus PanelID, mode ScreenMode) int {
 	return top
 }
 
-func layoutLandscape(l *Layout, w, body int, mode ScreenMode) {
+func layoutLandscape(l *Layout, w, body int, mode ScreenMode, empty [SidePanelCount]bool) {
+	if empty[l.Expanded] {
+		for _, p := range [4]PanelID{Packages, Home, Staged, Issues} {
+			if !empty[p] {
+				l.Expanded = p
+				break
+			}
+		}
+	}
 	side := sideWidth(w, mode)
 	l.Main = Rect{X: side, Y: 0, Width: w - side, Height: body}
 
 	l.Side[Status] = Rect{X: 0, Y: 0, Width: side, Height: StatusHeight}
 	rest := body - StatusHeight
-	heights := splitHeights(rest, l.Expanded)
+	heights := splitHeights(rest, l.Expanded, empty)
 	y := StatusHeight
 	for i, p := range [4]PanelID{Packages, Home, Staged, Issues} {
 		l.Side[p] = Rect{X: 0, Y: y, Width: side, Height: heights[i]}
@@ -196,17 +208,31 @@ func sideWidth(w int, mode ScreenMode) int {
 	return side
 }
 
-func splitHeights(rest int, expanded PanelID) [4]int {
+func splitHeights(rest int, expanded PanelID, empty [SidePanelCount]bool) [4]int {
 	var heights [4]int
 	order := [4]PanelID{Packages, Home, Staged, Issues}
-	if rest/4 >= MinPanelHeight {
-		base := rest / 4
-		extra := rest % 4
-		for i := range heights {
+	collapsed := 0
+	for _, p := range order {
+		if empty[p] {
+			collapsed++
+		}
+	}
+	avail := rest - CollapsedRows*collapsed
+	n := len(order) - collapsed
+	if n > 0 && avail/n >= MinPanelHeight {
+		base := avail / n
+		extra := avail % n
+		shown := 0
+		for i, p := range order {
+			if empty[p] {
+				heights[i] = CollapsedRows
+				continue
+			}
 			heights[i] = base
-			if i < extra {
+			if shown < extra {
 				heights[i]++
 			}
+			shown++
 		}
 		return heights
 	}

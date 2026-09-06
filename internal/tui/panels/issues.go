@@ -75,9 +75,10 @@ func (p *Issues) View() string {
 	return strings.Join(lines, "\n")
 }
 func (p *Issues) Title() string { return "[4] Issues" }
+func (p *Issues) Len() int      { return len(p.items) }
 func (p *Issues) Counter() string {
 	if len(p.items) == 0 {
-		return ""
+		return "no issues"
 	}
 	return fmt.Sprintf("%d of %d", p.cursor+1, len(p.items))
 }

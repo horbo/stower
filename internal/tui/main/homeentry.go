@@ -29,17 +29,20 @@ const (
 )
 
 type EntryFacts struct {
-	path    string
-	exists  bool
-	err     error
-	isDir   bool
-	isLink  bool
-	size    int64
-	files   int
-	capped  bool
-	names   []string
-	preview []string
-	binary  bool
+	path         string
+	exists       bool
+	err          error
+	isDir        bool
+	isLink       bool
+	linkTarget   string
+	linkPkg      string
+	linkDangling bool
+	size         int64
+	files        int
+	capped       bool
+	names        []string
+	preview      []string
+	binary       bool
 }
 
 type HomeEntry struct {
@@ -162,11 +165,12 @@ func (h *HomeEntry) lines() []string {
 	}
 
 	lines := []string{h.st.Dim.Render(components.Truncate(h.summary(), h.width))}
-	if h.facts.isLink {
-		lines = append(lines, h.st.Dim.Render(components.Truncate("a symlink cannot be staged", h.width)))
-	}
 	lines = append(lines, "")
-	lines = append(lines, h.destination()...)
+	if h.facts.isLink {
+		lines = append(lines, h.linkLines()...)
+	} else {
+		lines = append(lines, h.destination()...)
+	}
 	lines = append(lines, "")
 	lines = append(lines, h.body()...)
 	return lines
@@ -200,6 +204,25 @@ func kindOf(facts EntryFacts) string {
 	default:
 		return "file"
 	}
+}
+
+func (h *HomeEntry) linkLines() []string {
+	var lines []string
+	switch {
+	case h.facts.linkPkg != "" && h.facts.linkDangling:
+		lines = append(lines, h.st.Warn.Render(components.Truncate("⚠ already in package "+h.facts.linkPkg+" (dangling link)", h.width)))
+	case h.facts.linkPkg != "":
+		lines = append(lines, h.st.OK.Render(components.Truncate("✔ already in package "+h.facts.linkPkg, h.width)))
+	case h.facts.linkDangling:
+		lines = append(lines, h.st.Warn.Render(components.Truncate("⚠ dangling link", h.width)))
+	}
+	if h.facts.linkTarget != "" {
+		lines = append(lines, h.st.Dim.Render(components.Truncate("→ "+h.facts.linkTarget, h.width)))
+	}
+	if h.facts.linkPkg == "" {
+		lines = append(lines, h.st.Dim.Render(components.Truncate("a symlink cannot be staged", h.width)))
+	}
+	return lines
 }
 
 func (h *HomeEntry) destination() []string {
@@ -257,7 +280,7 @@ func (h *HomeEntry) body() []string {
 	return lines
 }
 
-func InspectContext(ctx context.Context, path string) EntryFacts {
+func InspectContext(ctx context.Context, paths config.Paths, path string) EntryFacts {
 	facts := EntryFacts{path: path}
 	if err := ctx.Err(); err != nil {
 		facts.err = err
@@ -276,6 +299,11 @@ func InspectContext(ctx context.Context, path string) EntryFacts {
 	facts.isDir = info.IsDir()
 	facts.size = info.Size()
 	if facts.isLink {
+		if link, ok := dotfiles.InspectLink(paths, path); ok {
+			facts.linkTarget = link.Target
+			facts.linkPkg = link.Package
+			facts.linkDangling = link.Dangling
+		}
 		return facts
 	}
 	if facts.isDir {
@@ -289,12 +317,6 @@ func InspectContext(ctx context.Context, path string) EntryFacts {
 	}
 	facts.preview, facts.binary = head(path, previewLines)
 	return facts
-}
-
-func inspect(path string) EntryFacts { return InspectContext(context.Background(), path) }
-
-func countFiles(root string, limit int) (int, bool) {
-	return countFilesContext(context.Background(), root, limit)
 }
 
 func countFilesContext(ctx context.Context, root string, limit int) (int, bool) {
