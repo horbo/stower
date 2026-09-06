@@ -116,7 +116,9 @@ steps and never kills a running stow subprocess.
 
 1. In the Home panel the user browses the target tree. Hidden entries are shown, the dotfiles
    directory is excluded, directories load lazily. Managed entries carry a dim `[zsh]` badge,
-   cannot be selected and cannot be expanded (their content is already inside the repo).
+   cannot be selected and cannot be expanded (their content is already inside the repo); the
+   same dim badge also covers a dangling symlink that still resolves lexically to a package
+   entry.
 2. `space` on an entry opens the Assign popup: pick an existing package or type a new name.
    The entry joins the session staging (`map[targetPath]package`) and shows a `→ git` badge.
    Several packages can be staged at once. The entry appears immediately; the Staged panel
@@ -249,14 +251,16 @@ dim, staged entries accent, ok green, replaced red, warning yellow.
 | [0] | Status   | `~/dotfiles → ~  stow 2.4.1  git 1*`, one line, fixed height    | `c commit`, `R restow all`                          |
 | [1] | Packages | state glyph, name, `*` when dirty in git                        | `enter` focus main, `r restore`, `R restow`, `c commit` |
 | [2] | Home     | target tree; dim `[zsh]` badge = managed (not selectable, not expandable), accent `→ git` = staged | `space stage`, `u unstage`, `←→ fold`, `/ filter` |
-| [3] | Staged   | session staging grouped by package; `✘ reason` under a blocked path, per-package line for execution failures | `enter apply`, `u unstage`, `e rename package`      |
-| [4] | Issues   | doctor problems only: replaced / missing / foreign / unowned / unnormalized | `f fix`, `D diff`                       |
+| [3] | Staged   | session staging grouped by package; `✘ reason` under a blocked path, per-package line for execution failures; empty shows `nothing staged` in the title counter | `enter apply`, `u unstage`, `e rename package`      |
+| [4] | Issues   | doctor problems only: replaced / missing / foreign / unowned / unnormalized; empty shows `no issues` in the title counter | `f fix`, `D diff`                       |
 
-Global keys: `1-4` switch panels (`0` Status), `tab` next panel, `?` full key list, `+` / `_`
-screen modes, `R` restow all packages (with Confirm), `ctrl+r` re-scan without touching the
-filesystem, `q` quit, `esc` closes a popup, returns focus from main to the side panel, or
-clears the Home filter. `x` toggles `remove .git after move` while the Staged plan is shown;
-the `x` context menu is post-v1 and will absorb that toggle as one of its items.
+Global keys: `1-4` switch panels (`0` Status), `tab` next panel, `?` full key list, `+` / `-`
+screen modes (`_` remains an alias for `-`), `R` restow all packages (with Confirm), `ctrl+r`
+re-scan without touching the filesystem, `q` quit, `esc` closes a popup, returns focus from
+main to the side panel, or clears the Home filter. A finished operation log closes with either
+`enter` or `esc`, restoring the panel and focus that were active before the operation started.
+`x` toggles `remove .git after move` while the Staged plan is shown; the `x` context menu is
+post-v1 and will absorb that toggle as one of its items.
 
 Panels never mutate shared state directly: they return a `tea.Cmd` emitting a request message
 (`StageRequestMsg`, `UnstageRequestMsg`, `UnstageGroupMsg`, `RenameGroupMsg`) and the root model
@@ -277,10 +281,15 @@ The main panel content follows the focused panel and its highlighted item:
   the file, `Would become: <pkg>/dot-config/ghostty/`, `Expected link: …`. File counting stops
   at `mainpanel.CountCap` (2000) and shows `2000+ files`. Preview reads and file counts run
   in the background with a local spinner; Home does not search for nested `.git` entries.
-  Symlinks that are not managed are
-  also non-selectable and non-expandable, since staging rejects every symlink anyway. The `/`
-  filter matches only visible (expanded) rows by design; a deep search would be a separate
-  asynchronous mode.
+  A symlink shows the raw `readlink` target on its own line below a status line: a link
+  resolving into a package gets a green `✔ already in package X` (a yellow
+  `⚠ already in package X (dangling link)` when it is also broken), a broken link that resolves
+  to no package gets `⚠ dangling link`, and only a link that leads outside the repo altogether
+  gets `a symlink cannot be staged`. Symlinks are always non-selectable and non-expandable,
+  since staging rejects every symlink anyway. The `/` filter matches only visible (expanded)
+  rows by design; expanding a directory clears the filter so its newly revealed children stay
+  visible, while collapsing a node or expanding an already-expanded one leaves the filter
+  untouched. A deep search would be a separate asynchronous mode.
 - **Staged plan**: moves grouped by package, expected links, stow command, `✘ blocked` entries
   with reasons, toggles such as `[x] remove .git after move`. The toggle is **per package**,
   driven by the package highlighted in the Staged side panel and toggled with `x` (M3 decision:
@@ -291,22 +300,27 @@ The main panel content follows the focused panel and its highlighted item:
   `Then: remove empty ~/dotfiles/zsh`, dirty-git warning; blocked variant
   `✘ ~/.zshrc is a regular file → fix in Issues first`.
 - **Log**: during an operation the main panel becomes a live command log (`✔ mv …`, indented
-  stow output, `✘` failures, `↩ rollback` steps) with a per-package summary.
+  stow output, `✘` failures, `↩ rollback` steps) with a per-package summary. While the operation
+  runs, `ctrl+c cancel` is the only key; once it finishes, `enter` or `esc` returns to the panel
+  and focus that were active before the operation started.
 
 ### Responsiveness
 
 Layout is recomputed on every `tea.WindowSizeMsg`; the root model hands sizes to panels.
 
 - **Landscape** (`W >= 100`): side column `clamp(W/3, 32, 48)`, main takes the rest. Status is
-  a fixed 3 rows; the other four panels split the remaining height evenly. When a panel would
-  get fewer than 6 rows the column switches to **accordion**: the focused panel takes the
-  remainder and the others collapse to their title line only.
+  a fixed 3 rows; the other four panels split the remaining height evenly. An empty Staged or
+  Issues panel is collapsed to its title line regardless of focus, and the height it frees goes
+  to the remaining panels. When a panel would still get fewer than 6 rows the column switches to
+  **accordion**: the focused panel takes the remainder and the others collapse to their title
+  line only, except that focus on an empty panel expands the first non-empty panel instead.
+  Packages never collapses.
 - **Portrait** (`W < 100`): a deliberate departure from lazygit, which stacks every side panel.
   Only the focused side panel is visible on top (40% of the height), main below it, and the
   other panels are reachable through a tab strip in the bottom bar:
   `[0]Status [1]Packages [2]Home [3]Staged [4]Issues`.
-- **Screen modes** `+` / `_`: normal → half (side column takes 50% of the width) → fullscreen
-  (only the focused panel; useful for the log and diffs in main).
+- **Screen modes** `+` / `-` (`_` remains an alias for `-`): normal → half (side column takes
+  50% of the width) → fullscreen (only the focused panel; useful for the log and diffs in main).
 - The key bar truncates to the width (full list under `?`). Panel text is truncated with `…`,
   main scrolls vertically. Below `60×16` a single line `terminal too small` is shown.
 

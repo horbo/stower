@@ -139,8 +139,8 @@ func defaultKeyMap() keyMap {
 		ForceQuit: key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
 		Help:      key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "keys")),
 		NextPanel: key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next panel")),
-		ModeNext:  key.NewBinding(key.WithKeys("+"), key.WithHelp("+", "wider")),
-		ModePrev:  key.NewBinding(key.WithKeys("_"), key.WithHelp("_", "narrower")),
+		ModeNext:  key.NewBinding(key.WithKeys("+"), key.WithHelp("+/-", "wider/narrower")),
+		ModePrev:  key.NewBinding(key.WithKeys("_", "-"), key.WithHelp("_", "narrower")),
 		Refresh:   key.NewBinding(key.WithKeys("ctrl+r"), key.WithHelp("ctrl+r", "rescan")),
 		RestowAll: key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "restow all")),
 		Back:      key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
@@ -152,6 +152,12 @@ func defaultKeyMap() keyMap {
 		m.byPanel[p] = key.NewBinding(key.WithKeys(string(rune('0' + int(p)))))
 	}
 	return m
+}
+
+type returnFocus struct {
+	focus PanelID
+	main  bool
+	valid bool
 }
 
 type Model struct {
@@ -217,7 +223,7 @@ type Model struct {
 	planPending             *planRequest
 	applyPending            bool
 	buildAdoptPlan          func(context.Context, config.Paths, dotfiles.Staging) dotfiles.AdoptPlan
-	inspectHomeEntry        func(context.Context, string) mainpanel.EntryFacts
+	inspectHomeEntry        func(context.Context, config.Paths, string) mainpanel.EntryFacts
 	previewPath             string
 	previewGeneration       int
 	previewCancel           context.CancelFunc
@@ -225,10 +231,11 @@ type Model struct {
 	previewActiveGeneration int
 	previewPending          *previewRequest
 
-	runner  dotfiles.Runner
-	exec    *execution
-	runID   int
-	logOpen bool
+	runner    dotfiles.Runner
+	exec      *execution
+	runID     int
+	logOpen   bool
+	logReturn returnFocus
 
 	flash    string
 	flashID  int
@@ -329,6 +336,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.git = msg.git
 		m.packages.SetPackages(packageItems(msg.pkgs, msg.git))
 		m.issues.SetIssues(msg.issues)
+		m.relayout()
 		m.status.SetIssues(len(msg.issues))
 		m.status.SetGit(m.git.repo, len(m.git.dirty))
 		homeCmd := m.homePanel.Reload()
@@ -577,10 +585,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.syncMain()
 		}
 		if m.logOpen {
-			m.closeLog()
-			m.mainFocused = false
-			m.relayout()
-			return m, m.syncMain()
+			return m, m.closeLogAndReturn()
 		}
 		if m.mainFocused {
 			m.mainFocused = false
@@ -588,10 +593,13 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	case key.Matches(msg, m.keys.Enter):
-		if m.restoreOpen && !m.logOpen {
+		if m.logOpen {
+			return m, m.closeLogAndReturn()
+		}
+		if m.restoreOpen {
 			return m, m.confirmRestore()
 		}
-		if m.focus == Staged && !m.logOpen {
+		if m.focus == Staged {
 			return m.apply()
 		}
 		if !m.mainFocused && m.canFocusMain() {
@@ -697,6 +705,20 @@ func (m *Model) closeLog() {
 	m.logOpen = false
 	m.restoreOpen = false
 	m.diffOpen = false
+	m.logReturn = returnFocus{}
+}
+
+func (m *Model) closeLogAndReturn() tea.Cmd {
+	ret := m.logReturn
+	m.closeLog()
+	if ret.valid {
+		m.focus = ret.focus
+		m.mainFocused = ret.main && m.canFocusMain()
+	} else {
+		m.mainFocused = false
+	}
+	m.relayout()
+	return m.syncMain()
 }
 
 func (m Model) focusedPanel() Panel {
@@ -716,8 +738,15 @@ func (m *Model) layoutFocus() PanelID {
 	return m.focus
 }
 
+func (m *Model) collapsedSidePanels() [SidePanelCount]bool {
+	var empty [SidePanelCount]bool
+	empty[Staged] = m.staged.Len() == 0
+	empty[Issues] = m.issues.Len() == 0
+	return empty
+}
+
 func (m *Model) relayout() {
-	m.layout = Compute(m.width, m.height, m.layoutFocus(), m.mode)
+	m.layout = ComputeWith(m.width, m.height, m.layoutFocus(), m.mode, m.collapsedSidePanels())
 	if m.layout.TooSmall {
 		return
 	}
@@ -822,8 +851,9 @@ func (m *Model) startPreview(req previewRequest) tea.Cmd {
 	m.previewActive = true
 	m.previewActiveGeneration = req.generation
 	inspect := m.inspectHomeEntry
+	paths := m.paths
 	load := func() tea.Msg {
-		return homeEntryLoadedMsg{path: req.path, generation: req.generation, facts: inspect(ctx, req.path)}
+		return homeEntryLoadedMsg{path: req.path, generation: req.generation, facts: inspect(ctx, paths, req.path)}
 	}
 	return tea.Batch(load, m.mainHome.StartLoading())
 }
@@ -861,6 +891,7 @@ func (m *Model) stagingChanged() tea.Cmd {
 	m.blocked = map[string]string{}
 	m.mainStaged.SetScanning(len(m.staging) > 0)
 	m.refreshStagingViews()
+	m.relayout()
 	sync := m.syncMain()
 	if len(m.staging) == 0 {
 		m.planPending = nil
@@ -1245,6 +1276,6 @@ func (m Model) keySections() []popups.Section {
 	}
 	return []popups.Section{
 		{Title: title, Bindings: m.contextKeys()},
-		{Title: "Global", Bindings: append(m.globalKeys(), m.keys.Back, m.keys.ModePrev, m.keys.ForceQuit)},
+		{Title: "Global", Bindings: append(m.globalKeys(), m.keys.Back, m.keys.ForceQuit)},
 	}
 }

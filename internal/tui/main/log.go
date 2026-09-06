@@ -205,7 +205,7 @@ func (l *Log) Keys() []key.Binding {
 	}
 	return []key.Binding{
 		key.NewBinding(key.WithKeys("j", "k"), key.WithHelp("j/k", "scroll")),
-		key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "close")),
+		key.NewBinding(key.WithKeys("enter", "esc"), key.WithHelp("enter", "back")),
 	}
 }
 

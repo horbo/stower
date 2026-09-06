@@ -187,8 +187,8 @@ func (p *Home) loadContext(ctx context.Context, path string) ([]components.Node,
 			if info, err := os.Stat(full); err == nil && info.IsDir() {
 				node.IsDir = true
 			}
-			if pkg, ok := dotfiles.ManagedBy(p.paths, full); ok {
-				node.Managed = pkg
+			if info, ok := dotfiles.InspectLink(p.paths, full); ok {
+				node.Managed = info.Package
 			}
 		default:
 			node.Selectable = true

@@ -69,6 +69,7 @@ func (m *Model) beginOperation(title string, plan dotfiles.AdoptPlan, work func(
 	m.logOpen = true
 	m.restoreOpen = false
 	m.diffOpen = false
+	m.logReturn = returnFocus{focus: m.focus, main: m.mainFocused, valid: true}
 	m.mainFocused = true
 	m.mainLog.Start(title)
 	m.relayout()

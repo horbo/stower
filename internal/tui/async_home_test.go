@@ -32,15 +32,15 @@ func newPreviewGate() *previewGate {
 	return &previewGate{calls: make(chan *previewCall, 8)}
 }
 
-func (g *previewGate) inspect() func(context.Context, string) mainpanel.EntryFacts {
-	return func(ctx context.Context, path string) mainpanel.EntryFacts {
+func (g *previewGate) inspect() func(context.Context, config.Paths, string) mainpanel.EntryFacts {
+	return func(ctx context.Context, paths config.Paths, path string) mainpanel.EntryFacts {
 		call := &previewCall{ctx: ctx, path: path, release: make(chan struct{})}
 		g.calls <- call
 		select {
 		case <-call.release:
 		case <-ctx.Done():
 		}
-		return mainpanel.InspectContext(ctx, path)
+		return mainpanel.InspectContext(ctx, paths, path)
 	}
 }
 
@@ -175,9 +175,9 @@ func TestHomeCursorMoveDoesNotSynchronouslyScanOrInspect(t *testing.T) {
 		return realPlan(ctx, scanPaths, staging)
 	}
 	realInspect := m.inspectHomeEntry
-	m.inspectHomeEntry = func(ctx context.Context, path string) mainpanel.EntryFacts {
+	m.inspectHomeEntry = func(ctx context.Context, scanPaths config.Paths, path string) mainpanel.EntryFacts {
 		atomic.AddInt32(&inspectCalls, 1)
-		return realInspect(ctx, path)
+		return realInspect(ctx, scanPaths, path)
 	}
 
 	updated, cmd := m.Update(stagingKeyMsg("j"))
