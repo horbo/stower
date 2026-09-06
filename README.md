@@ -120,8 +120,10 @@ stower restow [--dotfiles <dir>] [--target <dir>]         run stow -R on every p
 stower --version                                          print the version
 ```
 
-`stower status` exits non-zero when any link is not healthy, which makes it usable from
-scripts and shell prompts.
+`stower status` prints one line per package entry with its state: `ok`, `missing`, `replaced`,
+`foreign`, `unowned` (the link resolves to the right entry but stow will not recognise it as
+its own) or `unnormalized`. It exits non-zero when any link is not healthy, which makes it
+usable from scripts and shell prompts.
 
 ## Keys
 

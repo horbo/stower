@@ -21,7 +21,7 @@ func newTestModel(t *testing.T) tea.Model {
 	mkdir(t, filepath.Join(dotfilesDir, "misc"))
 	write(t, filepath.Join(dotfilesDir, "zsh", "dot-zshrc"), "a")
 	write(t, filepath.Join(dotfilesDir, "misc", "dot-bar"), "b")
-	if err := os.Symlink(filepath.Join(dotfilesDir, "zsh", "dot-zshrc"), filepath.Join(root, ".zshrc")); err != nil {
+	if err := os.Symlink(filepath.Join("dotfiles", "zsh", "dot-zshrc"), filepath.Join(root, ".zshrc")); err != nil {
 		t.Fatal(err)
 	}
 

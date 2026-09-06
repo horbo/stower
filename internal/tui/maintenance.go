@@ -118,9 +118,13 @@ func (m *Model) openFix() tea.Cmd {
 	} else {
 		m.fixAction = doctor.Restow
 		undo := "remove the package links with restore"
-		if issue.State == doctor.Unnormalized {
+		switch issue.State {
+		case doctor.Unnormalized:
 			m.fixAction = doctor.Normalize
 			undo = "rename the entry back manually after restoring"
+		case doctor.Unowned:
+			m.fixAction = doctor.Relink
+			undo = "restore the entry to move the file back"
 		}
 		m.confirmPopup.Open(actionFix, "Fix "+string(issue.State), []string{issue.Package + "/" + issue.Entry.PkgRel, string(m.fixAction)}, undo)
 		m.popup = popupConfirm

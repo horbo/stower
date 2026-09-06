@@ -178,7 +178,8 @@ Each link point of each package has one state:
 | ok           | symlink points at the right package entry              | none                                                      |
 | missing      | target path does not exist                             | restow the package                                        |
 | replaced     | regular file or directory where a link should be       | popup: Keep TARGET (move it into the package, overwrite, restow) / Keep REPO (delete the target copy, restow) / Cancel |
-| foreign      | symlink pointing elsewhere                             | report only                                               |
+| foreign      | symlink pointing somewhere else; the detail shows the readlink text and marks a dangling link | report only               |
+| unowned      | symlink resolves to the right package entry but not in stow's relative form | relink: move the link into a `.stower-backup-*` directory inside dotfiles, restow, delete the backup |
 | unnormalized | top-level package entry starts with `.` instead of `dot-` | rename like `update.sh` does, skipped when the destination exists |
 
 Detecting a replaced **directory** is a heuristic, because nothing records whether stow folded
@@ -188,6 +189,17 @@ and reports the individual entries. An ordinary empty unfolded directory is ther
 offered as a destructive repair. `Keep TARGET` / `Keep REPO` move the losing copy to a
 `.stower-backup-*` directory inside dotfiles first and delete it only after a successful restow;
 a failed rollback keeps the backup and reports its path.
+
+Stow decides ownership textually, not by inode (`Stow.pm`, `find_stowed_path`): a link is owned by stow
+only when the destination is relative and `join_paths(parent(target), link_dest)` starts
+with `abs2rel(realpath(dotfiles), realpath(target))`. An absolute destination is rejected
+outright, and so is a relative one written at the wrong depth or through a symlinked dotfiles
+path. Such a link resolves to the correct package entry, so an inode check calls it healthy,
+while `stow -R` fails with `existing target is not owned by stow` and `stow -D` silently skips
+it. `dotfiles.Linked` therefore requires both checks: `ResolvesTo` (inode) and `StowOwns`
+(stow's textual rule). Everything else is a conflict, which also blocks restore plans on the
+affected entries. `ManagedBy` stays inode-based: it answers which package owns a path in the
+Home panel, not whether stow will accept the link.
 
 Problems appear in the Issues panel; the full per-package table appears in the Package main
 context. `R` restows every package, which is the exact equivalent of `update.sh`.
@@ -233,7 +245,7 @@ dim, staged entries accent, ok green, replaced red, warning yellow.
 | [1] | Packages | state glyph, name, `*` when dirty in git                        | `enter` focus main, `r restore`, `R restow`, `c commit` |
 | [2] | Home     | target tree; dim `[zsh]` badge = managed (not selectable, not expandable), accent `→ git` = staged | `space stage`, `u unstage`, `←→ fold`, `/ filter` |
 | [3] | Staged   | session staging grouped by package; `✘ reason` under a blocked path, per-package line for execution failures | `enter apply`, `u unstage`, `e rename package`      |
-| [4] | Issues   | doctor problems only: replaced / missing / foreign / unnormalized | `f fix`, `D diff`                                 |
+| [4] | Issues   | doctor problems only: replaced / missing / foreign / unowned / unnormalized | `f fix`, `D diff`                       |
 
 Global keys: `1-4` switch panels (`0` Status), `tab` next panel, `?` full key list, `+` / `_`
 screen modes, `R` restow all packages (with Confirm), `ctrl+r` re-scan without touching the
@@ -347,7 +359,7 @@ the rendering stack supports layer composition.
 - **Confirm** (`enter` in Staged, `r` in Packages, `f` in Issues, `R` restow all): summary and
   how to undo, `y` / `n`.
 - **Fix** for `replaced`: Keep TARGET / Keep REPO / Cancel. `unnormalized` renames without
-  asking, `missing` restows.
+  asking, `missing` restows, `unowned` relinks; the last three go through Confirm.
 - **Commit** after a successful operation: `git status --porcelain` for the touched packages,
   message input with a default subject, `enter` / `s` skip / `esc`.
 - **Keys** (`?`), **Error** (title plus stderr in a viewport), **First run** (missing dotfiles:

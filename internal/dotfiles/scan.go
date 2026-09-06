@@ -106,7 +106,7 @@ func walkPackageDir(paths config.Paths, pkg, relPkg string, out *[]Entry) error 
 		case err != nil:
 			return err
 		case info.Mode()&fs.ModeSymlink != 0:
-			if pointsAt(targetPath, filepath.Join(paths.Dotfiles, pkg, pkgRel)) {
+			if ResolvesTo(targetPath, filepath.Join(paths.Dotfiles, pkg, pkgRel)) && StowOwns(paths, pkg, entry) {
 				entry.State = Linked
 			} else {
 				entry.State = Conflict
@@ -151,7 +151,7 @@ func ManagedBy(paths config.Paths, targetPath string) (string, bool) {
 	return pkg, true
 }
 
-func pointsAt(link, want string) bool {
+func ResolvesTo(link, want string) bool {
 	dest, err := resolveLink(link)
 	if err != nil {
 		return false
@@ -161,6 +161,26 @@ func pointsAt(link, want string) bool {
 		return false
 	}
 	return dest == resolved
+}
+
+func StowOwns(paths config.Paths, pkg string, entry Entry) bool {
+	dest, err := os.Readlink(entry.TargetPath(paths))
+	if err != nil || filepath.IsAbs(dest) {
+		return false
+	}
+	target, err := filepath.EvalSymlinks(paths.Target)
+	if err != nil {
+		return false
+	}
+	repo, err := filepath.EvalSymlinks(paths.Dotfiles)
+	if err != nil {
+		return false
+	}
+	stowRel, err := filepath.Rel(target, repo)
+	if err != nil {
+		return false
+	}
+	return filepath.Join(filepath.Dir(entry.TargetRel), dest) == filepath.Join(stowRel, pkg, entry.PkgRel)
 }
 
 func resolveLink(link string) (string, error) {

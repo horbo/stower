@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/horbo/stower/internal/config"
 	"github.com/horbo/stower/internal/doctor"
 	"github.com/horbo/stower/internal/dotfiles"
 	"github.com/horbo/stower/internal/stow"
@@ -293,5 +295,72 @@ func TestCancelledRestoreDoesNotUnstow(t *testing.T) {
 	}
 	if _, managed := dotfiles.ManagedBy(m.paths, filepath.Join(m.paths.Target, ".bar")); !managed {
 		t.Fatal("cancelled restore removed link")
+	}
+}
+
+func newUnownedModel(t *testing.T) Model {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", root)
+	dotfilesDir := filepath.Join(root, "dotfiles")
+	mkdir(t, filepath.Join(dotfilesDir, "zsh"))
+	write(t, filepath.Join(dotfilesDir, "zsh", "dot-zshrc"), "a\n")
+	if err := os.Symlink(filepath.Join(dotfilesDir, "zsh", "dot-zshrc"), filepath.Join(root, ".zshrc")); err != nil {
+		t.Fatal(err)
+	}
+	model := New(config.Paths{Target: root, Dotfiles: dotfilesDir}, "2.4.1")
+	updated := declineGitInit(deliverStagingCmd(t, model, model.Init()))
+	updated, _ = updated.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	return updated.(Model)
+}
+
+func TestUnownedFixUI(t *testing.T) {
+	if _, err := exec.LookPath("stow"); err != nil {
+		t.Fatal(err)
+	}
+	m := newUnownedModel(t)
+	m = press(t, m, "4").(Model)
+	issue, ok := m.issues.Selected()
+	if !ok || issue.State != doctor.Unowned || issue.Package != "zsh" {
+		t.Fatalf("selected issue = %+v, want an unowned zsh entry", issue)
+	}
+	for _, size := range [][2]int{{60, 16}, {70, 18}, {100, 30}} {
+		updated, rendered := resize(t, m, size[0], size[1])
+		assertScreen(t, rendered, size[0], size[1])
+		m = updated.(Model)
+	}
+	m = press(t, m, "f").(Model)
+	if m.popup != popupConfirm || m.fixAction != doctor.Relink {
+		t.Fatalf("popup=%v action=%q, want the confirm popup with relink", m.popup, m.fixAction)
+	}
+	for _, size := range [][2]int{{60, 16}, {70, 18}, {100, 30}} {
+		updated, rendered := resize(t, m, size[0], size[1])
+		assertScreen(t, rendered, size[0], size[1])
+		m = updated.(Model)
+	}
+	view := ansi.Strip(m.View().Content)
+	for _, want := range []string{"Fix unowned", "zsh/dot-zshrc", "relink"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("confirmation does not contain %q:\n%s", want, view)
+		}
+	}
+	updated, cmd := m.Update(popups.ConfirmedMsg{Action: actionFix})
+	m = completeOperation(t, updated.(Model), cmd)
+	dest, err := os.Readlink(filepath.Join(m.paths.Target, ".zshrc"))
+	if err != nil || dest != filepath.Join("dotfiles", "zsh", "dot-zshrc") {
+		t.Fatalf("readlink = %q, %v; want a relative stow link", dest, err)
+	}
+	if _, ok := m.issues.Selected(); ok {
+		t.Fatal("the unowned issue survived the fix")
+	}
+	for _, info := range m.pkgs {
+		for _, entry := range info.report.Entries {
+			if entry.State != doctor.OK {
+				t.Fatalf("%s: %+v", info.name, entry)
+			}
+		}
 	}
 }

@@ -68,7 +68,7 @@ func doFix(t *testing.T, paths config.Paths, issue Issue, action Action, runner 
 
 func TestInspectStates(t *testing.T) {
 	paths, runner := fixture(t)
-	for _, pkg := range []string{"healthy", "missing", "replaced", "foreign"} {
+	for _, pkg := range []string{"healthy", "missing", "replaced", "foreign", "unowned"} {
 		put(t, filepath.Join(paths.Dotfiles, pkg, "dot-"+pkg), pkg)
 	}
 	if result := runner.Restow("healthy", "replaced"); result.Err != nil {
@@ -81,20 +81,34 @@ func TestInspectStates(t *testing.T) {
 	if err := os.Symlink(filepath.Join(paths.Target, "outside"), filepath.Join(paths.Target, ".foreign")); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Symlink(filepath.Join(paths.Dotfiles, "unowned", "dot-unowned"), filepath.Join(paths.Target, ".unowned")); err != nil {
+		t.Fatal(err)
+	}
 	put(t, filepath.Join(paths.Dotfiles, "raw", ".zshenv"), "raw")
 	put(t, filepath.Join(paths.Dotfiles, "nested", "dot-config", "dot-deep"), "nested")
 	if result := runner.Restow("nested"); result.Err != nil {
 		t.Fatal(result.Err)
 	}
-	for pkg, state := range map[string]State{"healthy": OK, "missing": Missing, "replaced": Replaced, "foreign": Foreign, "raw": Unnormalized, "nested": Unnormalized} {
+	for pkg, state := range map[string]State{"healthy": OK, "missing": Missing, "replaced": Replaced, "foreign": Foreign, "unowned": Unowned, "raw": Unnormalized, "nested": Unnormalized} {
 		issueFor(t, paths, pkg, state)
+	}
+	foreign := issueFor(t, paths, "foreign", Foreign)
+	if foreign.Detail != "symlink points elsewhere: "+filepath.Join(paths.Target, "outside")+" (dangling)" || foreign.Fixable {
+		t.Fatalf("foreign detail = %q fixable=%v", foreign.Detail, foreign.Fixable)
+	}
+	unowned := issueFor(t, paths, "unowned", Unowned)
+	if unowned.Detail != "link resolves to the package entry but stow will not own it: "+filepath.Join(paths.Dotfiles, "unowned", "dot-unowned") || !unowned.Fixable {
+		t.Fatalf("unowned detail = %q fixable=%v", unowned.Detail, unowned.Fixable)
+	}
+	if plan := BuildRestorePlan(paths, "unowned"); plan.Runnable() {
+		t.Fatalf("restore allowed an unowned entry: %+v", plan)
 	}
 	issue := issueFor(t, paths, "nested", Unnormalized)
 	if issue.Fixable {
 		t.Fatal("nested dot- is fixable")
 	}
 	issues, reports, err := Inspect(paths)
-	if err != nil || len(issues) != 5 || len(reports) != 6 {
+	if err != nil || len(issues) != 6 || len(reports) != 7 {
 		t.Fatalf("%d issues %d reports err=%v", len(issues), len(reports), err)
 	}
 }
@@ -425,4 +439,101 @@ func TestUnfoldedDirectoryWithMissingLinks(t *testing.T) {
 		t.Fatal(result.Err())
 	}
 	issueFor(t, paths, "pkg", OK)
+}
+
+type failingRestow struct {
+	stow.Runner
+}
+
+func (r failingRestow) Restow(pkgs ...string) stow.Result {
+	return stow.Result{Err: errors.New("forced restow failure")}
+}
+
+func TestRelinkUnowned(t *testing.T) {
+	paths, runner := fixture(t)
+	repo := filepath.Join(paths.Dotfiles, "zsh", "dot-zshrc")
+	put(t, repo, "zsh")
+	target := filepath.Join(paths.Target, ".zshrc")
+	if err := os.Symlink(repo, target); err != nil {
+		t.Fatal(err)
+	}
+	if summary := doFix(t, paths, issueFor(t, paths, "zsh", Unowned), Relink, runner); !summary.OK() {
+		t.Fatal(summary.Err())
+	}
+	dest, err := os.Readlink(target)
+	if err != nil || dest != filepath.Join("dotfiles", "zsh", "dot-zshrc") {
+		t.Fatalf("readlink = %q, %v; want a relative stow link", dest, err)
+	}
+	assertText(t, target, "zsh")
+	if backups, _ := filepath.Glob(filepath.Join(paths.Dotfiles, ".stower-backup-*")); len(backups) != 0 {
+		t.Fatal(backups)
+	}
+	issueFor(t, paths, "zsh", OK)
+	if result := runner.Restow("zsh"); result.Err != nil {
+		t.Fatalf("stow -R after relink: %v", result.Err)
+	}
+}
+
+func TestRelinkRollback(t *testing.T) {
+	paths, runner := fixture(t)
+	repo := filepath.Join(paths.Dotfiles, "zsh", "dot-zshrc")
+	put(t, repo, "zsh")
+	put(t, filepath.Join(paths.Dotfiles, "zsh", "dot-other"), "other")
+	if result := runner.Restow("zsh"); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	target := filepath.Join(paths.Target, ".zshrc")
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(repo, target); err != nil {
+		t.Fatal(err)
+	}
+	events := make(chan dotfiles.Event, 200)
+	summary := Fix(context.Background(), paths, issueFor(t, paths, "zsh", Unowned), Relink, failingRestow{Runner: runner}, events)
+	if summary.OK() {
+		t.Fatal("forced failure succeeded")
+	}
+	if err := summary.Err(); err == nil || strings.Contains(err.Error(), "rollback") {
+		t.Fatalf("rollback did not complete cleanly: %v", err)
+	}
+	close(events)
+	rolledBack := false
+	for e := range events {
+		if e.Kind == dotfiles.Rollback {
+			rolledBack = true
+		}
+	}
+	if !rolledBack {
+		t.Fatal("no rollback event")
+	}
+	dest, err := os.Readlink(target)
+	if err != nil || dest != repo {
+		t.Fatalf("readlink = %q, %v; want the original link back", dest, err)
+	}
+	if backups, _ := filepath.Glob(filepath.Join(paths.Dotfiles, ".stower-backup-*")); len(backups) != 0 {
+		t.Fatal(backups)
+	}
+	if _, managed := dotfiles.ManagedBy(paths, filepath.Join(paths.Target, ".other")); !managed {
+		t.Fatal("rollback lost unaffected link")
+	}
+	issueFor(t, paths, "zsh", Unowned)
+}
+
+func TestRelinkRejectedForOtherStates(t *testing.T) {
+	paths, runner := fixture(t)
+	put(t, filepath.Join(paths.Dotfiles, "pkg", "dot-file"), "repo")
+	put(t, filepath.Join(paths.Target, ".file"), "target")
+	if result := doFix(t, paths, issueFor(t, paths, "pkg", Replaced), Relink, runner); result.OK() {
+		t.Fatal("relink accepted for a replaced entry")
+	}
+	assertText(t, filepath.Join(paths.Target, ".file"), "target")
+	repo := filepath.Join(paths.Dotfiles, "zsh", "dot-zshrc")
+	put(t, repo, "zsh")
+	if err := os.Symlink(repo, filepath.Join(paths.Target, ".zshrc")); err != nil {
+		t.Fatal(err)
+	}
+	if result := doFix(t, paths, issueFor(t, paths, "zsh", Unowned), KeepRepo, runner); result.OK() {
+		t.Fatal("keep repo accepted for an unowned entry")
+	}
 }

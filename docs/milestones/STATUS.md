@@ -14,6 +14,7 @@
 | M9 | Open in $EDITOR (v1.3) | queued |         |          | added 2026-09-05 at the user's request |
 | M10 | Release pipeline and Homebrew tap | done | 2026-09-05 | 2026-09-05 | goreleaser 2.18 config validated with `make snapshot`; `brews` kept despite deprecation (casks are macOS-only, no test block), so `goreleaser check` exits 2 by design; CI installs stow via Homebrew on both runners, tests skip below stow 2.4; tap repo, token and first tag still pending (see docs/RELEASING.md) |
 | M11 | License and third-party notices | done | 2026-09-05 | 2026-09-05 | reduced by the user to LICENSE only, done by the coordinator without an agent; THIRD_PARTY_NOTICES.md, tools/notices and make check-notices deferred to a later milestone |
+| M12 | Unowned links (v1.4) | done | 2026-09-06 | 2026-09-06 | doctor state `unowned` + `relink` fix for symlinks stow refuses to own (absolute / wrong depth / symlinked dotfiles path); Opus agent; backupFix helper shared by replace/relink; Detail column left out of `stower status`; two TUI fixtures switched from absolute to relative links; multiple unowned entries in one package must be relinked one restow at a time (carry-over) |
 
 Statuses: `queued` → `in-progress` → `done`; `blocked` with the reason in Notes.
 Dates are ISO `YYYY-MM-DD`.

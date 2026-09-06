@@ -20,6 +20,7 @@ const (
 	KeepRepo   Action = "keep repo"
 	Normalize  Action = "normalize"
 	Restow     Action = "restow"
+	Relink     Action = "relink"
 )
 
 func emit(events chan<- dotfiles.Event, event dotfiles.Event) {
@@ -116,6 +117,9 @@ func Fix(ctx context.Context, paths config.Paths, issue Issue, action Action, ru
 		if action == Normalize && issue.State == Unnormalized {
 			return normalize(ctx, paths, issue, runner, events)
 		}
+		if action == Relink && issue.State == Unowned {
+			return relink(ctx, paths, issue, runner, events)
+		}
 		if issue.State != Replaced || (action != KeepTarget && action != KeepRepo) {
 			return fmt.Errorf("invalid fix %q for %s", action, issue.State)
 		}
@@ -123,12 +127,18 @@ func Fix(ctx context.Context, paths config.Paths, issue Issue, action Action, ru
 	})
 }
 
-func replace(ctx context.Context, paths config.Paths, issue Issue, action Action, runner dotfiles.Runner, events chan<- dotfiles.Event) error {
-	repo, target := issue.Entry.PackagePath(paths, issue.Package), issue.Entry.TargetPath(paths)
-	if err := dotfiles.ValidateStagingPath(paths, target); err != nil {
-		return err
-	}
-	report := InspectPackage(paths, issue.Package)
+type backupFix struct {
+	paths    config.Paths
+	issue    Issue
+	runner   dotfiles.Runner
+	events   chan<- dotfiles.Event
+	original string
+	move     func() error
+	undoMove func() error
+}
+
+func (f backupFix) run(ctx context.Context) error {
+	report := InspectPackage(f.paths, f.issue.Package)
 	if report.Err != nil {
 		return report.Err
 	}
@@ -138,66 +148,55 @@ func replace(ctx context.Context, paths config.Paths, issue Issue, action Action
 			excluded = append(excluded, item.Entry.PkgRel)
 		}
 	}
-	if err := safeParents(paths.Dotfiles, repo); err != nil {
+	if err := dotfiles.CheckSameDevice(f.paths); err != nil {
 		return err
 	}
-	if err := safeParents(paths.Target, target); err != nil {
-		return err
-	}
-	if err := dotfiles.CheckSameDevice(paths); err != nil {
-		return err
-	}
-	backup, err := os.MkdirTemp(paths.Dotfiles, ".stower-backup-")
+	backup, err := os.MkdirTemp(f.paths.Dotfiles, ".stower-backup-")
 	if err != nil {
 		return err
 	}
 	saved := filepath.Join(backup, "original")
-	original := target
-	if action == KeepTarget {
-		original = repo
-	}
-	if err := os.Rename(original, saved); err != nil {
+	if err := os.Rename(f.original, saved); err != nil {
 		os.Remove(backup)
 		return err
 	}
-	emit(events, dotfiles.Event{Kind: dotfiles.OutputLine, Package: issue.Package, Message: "backup " + original + " → " + saved})
-	movedTarget, attempted := false, false
+	emit(f.events, dotfiles.Event{Kind: dotfiles.OutputLine, Package: f.issue.Package, Message: "backup " + f.original + " → " + saved})
+	attempted := false
 	rollback := func(cause error) error {
 		if attempted {
-			result := runner.Unstow(issue.Package)
-			output(events, issue.Package, result)
+			result := f.runner.Unstow(f.issue.Package)
+			output(f.events, f.issue.Package, result)
 			if result.Err != nil {
 				return errors.Join(cause, fmt.Errorf("rollback unstow failed; backup retained at %s: %w", backup, result.Err))
 			}
 		}
-		if movedTarget {
-			if err := os.Rename(repo, target); err != nil {
+		if f.undoMove != nil {
+			if err := f.undoMove(); err != nil {
 				return errors.Join(cause, fmt.Errorf("rollback failed; backup at %s: %w", backup, err))
 			}
 		}
-		if err := os.Rename(saved, original); err != nil {
+		if err := os.Rename(saved, f.original); err != nil {
 			return errors.Join(cause, fmt.Errorf("rollback failed; backup at %s: %w", backup, err))
 		}
 		os.Remove(backup)
-		emit(events, dotfiles.Event{Kind: dotfiles.Rollback, Package: issue.Package, Message: "restore original target and repository"})
+		emit(f.events, dotfiles.Event{Kind: dotfiles.Rollback, Package: f.issue.Package, Message: "restore original target and repository"})
 		if attempted {
-			result := runner.RestowExcluding(issue.Package, excluded)
-			output(events, issue.Package, result)
+			result := f.runner.RestowExcluding(f.issue.Package, excluded)
+			output(f.events, f.issue.Package, result)
 			return errors.Join(cause, result.Err)
 		}
 		return cause
 	}
-	if action == KeepTarget {
-		if err := os.Rename(target, repo); err != nil {
+	if f.move != nil {
+		if err := f.move(); err != nil {
 			return rollback(err)
 		}
-		movedTarget = true
 	}
 	if err := ctx.Err(); err != nil {
 		return rollback(err)
 	}
-	dry := runner.DryRunRestow(issue.Package)
-	output(events, issue.Package, dry)
+	dry := f.runner.DryRunRestow(f.issue.Package)
+	output(f.events, f.issue.Package, dry)
 	if dry.Err != nil {
 		return rollback(dry.Err)
 	}
@@ -205,8 +204,8 @@ func replace(ctx context.Context, paths config.Paths, issue Issue, action Action
 		return rollback(err)
 	}
 	attempted = true
-	result := runner.Restow(issue.Package)
-	output(events, issue.Package, result)
+	result := f.runner.Restow(f.issue.Package)
+	output(f.events, f.issue.Package, result)
 	if result.Err != nil {
 		return rollback(result.Err)
 	}
@@ -217,6 +216,46 @@ func replace(ctx context.Context, paths config.Paths, issue Issue, action Action
 		return fmt.Errorf("fix applied but backup cleanup failed at %s: %w", backup, err)
 	}
 	return nil
+}
+
+func replace(ctx context.Context, paths config.Paths, issue Issue, action Action, runner dotfiles.Runner, events chan<- dotfiles.Event) error {
+	repo, target := issue.Entry.PackagePath(paths, issue.Package), issue.Entry.TargetPath(paths)
+	if err := dotfiles.ValidateStagingPath(paths, target); err != nil {
+		return err
+	}
+	if err := safeParents(paths.Dotfiles, repo); err != nil {
+		return err
+	}
+	if err := safeParents(paths.Target, target); err != nil {
+		return err
+	}
+	fix := backupFix{paths: paths, issue: issue, runner: runner, events: events, original: target}
+	if action == KeepTarget {
+		fix.original = repo
+		movedTarget := false
+		fix.move = func() error {
+			if err := os.Rename(target, repo); err != nil {
+				return err
+			}
+			movedTarget = true
+			return nil
+		}
+		fix.undoMove = func() error {
+			if !movedTarget {
+				return nil
+			}
+			return os.Rename(repo, target)
+		}
+	}
+	return fix.run(ctx)
+}
+
+func relink(ctx context.Context, paths config.Paths, issue Issue, runner dotfiles.Runner, events chan<- dotfiles.Event) error {
+	target := issue.Entry.TargetPath(paths)
+	if err := safeParents(paths.Target, target); err != nil {
+		return err
+	}
+	return backupFix{paths: paths, issue: issue, runner: runner, events: events, original: target}.run(ctx)
 }
 
 func normalize(ctx context.Context, paths config.Paths, issue Issue, runner dotfiles.Runner, events chan<- dotfiles.Event) error {

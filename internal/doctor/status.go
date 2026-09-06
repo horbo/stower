@@ -20,6 +20,7 @@ const (
 	Replaced     State = "replaced"
 	Foreign      State = "foreign"
 	Unnormalized State = "unnormalized"
+	Unowned      State = "unowned"
 )
 
 type Issue struct {
@@ -105,7 +106,17 @@ func InspectPackage(paths config.Paths, pkg string) PackageReport {
 				return statErr
 			case info.Mode()&fs.ModeSymlink != 0:
 				if state, found := states[pkgRel]; !found || state != dotfiles.Linked {
-					item.State, item.Entry.State = Foreign, dotfiles.Conflict
+					dest, _ := os.Readlink(target)
+					if dotfiles.ResolvesTo(target, entry.PackagePath(paths, pkg)) {
+						item.State, item.Entry.State, item.Fixable = Unowned, dotfiles.Conflict, true
+						item.Detail = "link resolves to the package entry but stow will not own it: " + dest
+					} else {
+						item.State, item.Entry.State = Foreign, dotfiles.Conflict
+						item.Detail = "symlink points elsewhere: " + dest
+						if _, err := os.Stat(target); err != nil {
+							item.Detail += " (dangling)"
+						}
+					}
 				}
 			case info.IsDir() && child.IsDir():
 				replaced, err := replacedDirectory(paths, pkg, pkgRel, base)
@@ -122,7 +133,9 @@ func InspectPackage(paths config.Paths, pkg string) PackageReport {
 			default:
 				item.State, item.Entry.State, item.Fixable = Replaced, dotfiles.Conflict, true
 			}
-			item.Detail = string(item.State)
+			if item.Detail == "" {
+				item.Detail = string(item.State)
+			}
 			report.Entries = append(report.Entries, item)
 		}
 		return nil

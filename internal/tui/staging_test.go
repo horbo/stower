@@ -24,7 +24,7 @@ func newStagingModel(t *testing.T) (tea.Model, config.Paths) {
 	dotfilesDir := filepath.Join(root, "dotfiles")
 	mkdir(t, filepath.Join(dotfilesDir, "zsh"))
 	write(t, filepath.Join(dotfilesDir, "zsh", "dot-zshrc"), "a\n")
-	if err := os.Symlink(filepath.Join(dotfilesDir, "zsh", "dot-zshrc"), filepath.Join(root, ".zshrc")); err != nil {
+	if err := os.Symlink(filepath.Join("dotfiles", "zsh", "dot-zshrc"), filepath.Join(root, ".zshrc")); err != nil {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(root, ".bar"), "x\n")

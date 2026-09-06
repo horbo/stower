@@ -259,7 +259,7 @@ func (p *Package) summary() string {
 			counts[item.State]++
 		}
 		parts := []string{plural(len(p.reports), "entry", "entries")}
-		for _, state := range []doctor.State{doctor.OK, doctor.Missing, doctor.Replaced, doctor.Foreign, doctor.Unnormalized} {
+		for _, state := range []doctor.State{doctor.OK, doctor.Missing, doctor.Replaced, doctor.Foreign, doctor.Unowned, doctor.Unnormalized} {
 			if counts[state] > 0 {
 				parts = append(parts, fmt.Sprintf("%d %s", counts[state], state))
 			}
