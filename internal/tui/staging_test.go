@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
@@ -36,7 +37,7 @@ func newStagingModel(t *testing.T) (tea.Model, config.Paths) {
 
 	paths := config.Paths{Target: root, Dotfiles: dotfilesDir}
 	model := New(paths, "2.4.1")
-	updated, _ := model.Update(model.Init()())
+	var updated tea.Model = deliverStagingCmd(t, model, model.Init())
 	updated = declineGitInit(updated)
 	updated, _ = updated.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	return updated, paths
@@ -58,15 +59,73 @@ func send(t *testing.T, model tea.Model, keys ...string) tea.Model {
 	for _, k := range keys {
 		updated, cmd := model.Update(stagingKeyMsg(k))
 		model = updated
-		for i := 0; cmd != nil && i < 8; i++ {
-			msg := waitFor(cmd)
-			if msg == nil {
-				break
-			}
-			model, cmd = model.Update(msg)
-		}
+		model = deliverStagingCmd(t, model, cmd)
 	}
 	return model
+}
+
+func deliverStagingCmd(t *testing.T, model tea.Model, cmd tea.Cmd) tea.Model {
+	t.Helper()
+	if cmd == nil {
+		return model
+	}
+	msg := waitFor(cmd)
+	if msg == nil {
+		return model
+	}
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, next := range batch {
+			model = deliverStagingCmd(t, model, next)
+		}
+		return model
+	}
+	updated, next := model.Update(msg)
+	return deliverStagingCmd(t, updated, next)
+}
+
+func waitForLong(cmd tea.Cmd) tea.Msg {
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+	select {
+	case msg := <-done:
+		return msg
+	case <-time.After(2 * time.Second):
+		return nil
+	}
+}
+
+func deliverAll(t *testing.T, model tea.Model, cmd tea.Cmd) tea.Model {
+	t.Helper()
+	if cmd == nil {
+		return model
+	}
+	msg := waitForLong(cmd)
+	if msg == nil {
+		return model
+	}
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, next := range batch {
+			model = deliverAll(t, model, next)
+		}
+		return model
+	}
+	switch msg.(type) {
+	case spinner.TickMsg, flashExpiredMsg:
+		return model
+	}
+	updated, next := model.Update(msg)
+	return deliverAll(t, updated, next)
+}
+
+func stageAndWait(t *testing.T, m Model, path, pkg string) Model {
+	t.Helper()
+	return deliverStagingCmd(t, m, m.stage(path, pkg)).(Model)
+}
+
+func applyAndWait(t *testing.T, m Model) Model {
+	t.Helper()
+	updated, cmd := m.apply()
+	return deliverStagingCmd(t, updated, cmd).(Model)
 }
 
 func stagingKeyMsg(k string) tea.KeyPressMsg {

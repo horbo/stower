@@ -100,8 +100,7 @@ func (m Model) clickSide(p PanelID, x, y int) (tea.Model, tea.Cmd) {
 		m.mainFocused = false
 		m.relayout()
 	}
-	m.syncMain()
-	return m, cmd
+	return m, tea.Batch(cmd, m.syncMain())
 }
 
 func (m Model) clickMain(x, y int) (tea.Model, tea.Cmd) {
@@ -150,8 +149,7 @@ func (m Model) wheelAt(msg tea.Msg, mouse tea.Mouse) (tea.Model, tea.Cmd) {
 	}
 	if scroller, ok := panel.(scrollable); ok {
 		scroller.Scroll(delta)
-		m.syncMain()
-		return m, nil
+		return m, m.syncMain()
 	}
 	return m, panel.Update(msg)
 }

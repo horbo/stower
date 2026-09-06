@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -17,14 +16,15 @@ func (m *Model) showError(title string, err error) {
 }
 
 func (m Model) apply() (tea.Model, tea.Cmd) {
-	m.rebuildPlan()
-	m.syncMain()
-	for _, pkg := range m.plan.Packages {
-		for _, blocked := range pkg.Blocked {
-			m.failures[pkg.Package] = blocked.Reason
-		}
+	if !m.planReady || m.planActive {
+		return m, m.setFlash("Scan in progress")
 	}
-	m.staged.SetFailures(m.failures)
+	m.applyPending = true
+	req := planRequest{version: m.planVersion, staging: cloneStaging(m.staging)}
+	return m, tea.Batch(m.staged.SetScanning(true), m.startPlan(req, true))
+}
+
+func (m Model) openApplyConfirmation() (tea.Model, tea.Cmd) {
 	if m.plan.Fatal != nil {
 		m.showError("Cannot apply", m.plan.Fatal)
 		return m, nil
@@ -121,22 +121,12 @@ func (m Model) finishExecution(summary dotfiles.Summary) (tea.Model, tea.Cmd) {
 			m.failures[failure.Package] = failure.Err.Error()
 		}
 	}
-	for _, pkg := range run.plan.Packages {
-		var reasons []string
-		for _, blocked := range pkg.Blocked {
-			reasons = append(reasons, blocked.Reason)
-		}
-		if len(reasons) > 0 {
-			m.failures[pkg.Package] = strings.Join(reasons, "; ")
-		}
-	}
 	m.mainLog.Finish(summary, run.cancelled)
 	m.exec = nil
 	m.status.SetRunning(false)
-	m.rebuildPlan()
-	m.syncMain()
+	scan := m.stagingChanged()
 	if commit := m.offerCommit(run.title, summary.Succeeded); commit != nil {
-		return m, tea.Batch(refreshCmd(m.paths), commit)
+		return m, tea.Batch(scan, refreshCmd(m.paths), commit)
 	}
-	return m, refreshCmd(m.paths)
+	return m, tea.Batch(scan, refreshCmd(m.paths))
 }

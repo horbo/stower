@@ -23,6 +23,12 @@ type StagedPlan struct {
 	height    int
 	st        styles.Styles
 	vp        viewport.Model
+	scanning  bool
+}
+
+func (s *StagedPlan) SetScanning(scanning bool) {
+	s.scanning = scanning
+	s.render()
 }
 
 func NewStagedPlan(paths config.Paths, home string, st styles.Styles) *StagedPlan {
@@ -100,6 +106,9 @@ func (s *StagedPlan) render() {
 func (s *StagedPlan) lines() []string {
 	if s.width <= 0 {
 		return nil
+	}
+	if s.scanning {
+		return []string{s.st.Dim.Render("Scanning…")}
 	}
 	if len(s.plan.Packages) == 0 {
 		return []string{s.st.Dim.Render("nothing staged; press space in Home to stage an entry")}

@@ -166,10 +166,9 @@ func TestFirstRunAdoptsAndCommits(t *testing.T) {
 	}
 	configureRepo(t, paths.Dotfiles)
 
-	m.stage(filepath.Join(paths.Target, ".bar"), "misc")
+	m = stageAndWait(t, m, filepath.Join(paths.Target, ".bar"), "misc")
 	m.focus = Staged
-	updated, _ = m.apply()
-	m = updated.(Model)
+	m = applyAndWait(t, m)
 	if m.popup != popupConfirm {
 		t.Fatal("apply did not ask for confirmation")
 	}
@@ -314,7 +313,7 @@ func newRepositoryModel(t *testing.T) (Model, config.Paths) {
 	if model.popup != popupNone {
 		t.Fatal("a repository must not trigger the first run popup")
 	}
-	updated, _ := model.Update(model.Init()())
+	updated := deliverStagingCmd(t, model, model.Init())
 	updated, _ = updated.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	return updated.(Model), paths
 }

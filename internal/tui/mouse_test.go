@@ -211,7 +211,7 @@ func TestWheelScrollsTheMainViewport(t *testing.T) {
 		write(t, filepath.Join(dotfilesDir, "big", fmt.Sprintf("dot-entry%02d", i)), "x")
 	}
 	model := New(config.Paths{Target: root, Dotfiles: dotfilesDir}, "2.4.1")
-	updated, _ := model.Update(model.Init()())
+	updated := deliverStagingCmd(t, model, model.Init())
 	base, view := resize(t, declineGitInit(updated), 100, 30)
 	if first := lineAt(view, 2); !strings.Contains(first, "dot-entry00") {
 		t.Fatalf("the package table does not start at the first entry: %q", first)
@@ -486,6 +486,5 @@ func newReplacedModel(t *testing.T) tea.Model {
 	write(t, filepath.Join(root, ".bar"), "target")
 
 	model := New(config.Paths{Target: root, Dotfiles: dotfilesDir}, "2.4.1")
-	updated, _ := model.Update(model.Init()())
-	return declineGitInit(updated)
+	return declineGitInit(deliverStagingCmd(t, model, model.Init()))
 }

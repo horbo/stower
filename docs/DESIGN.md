@@ -119,7 +119,9 @@ steps and never kills a running stow subprocess.
    cannot be selected and cannot be expanded (their content is already inside the repo).
 2. `space` on an entry opens the Assign popup: pick an existing package or type a new name.
    The entry joins the session staging (`map[targetPath]package`) and shows a `→ git` badge.
-   Several packages can be staged at once.
+   Several packages can be staged at once. The entry appears immediately; the Staged panel
+   shows a spinner and `Scanning…` while its plan is prepared in the background. Browsing,
+   staging and unstaging remain available during the scan.
 3. Validation, at staging time and again when building the plan:
    - path outside the target, or inside dotfiles: rejected;
    - path is a symlink (managed or foreign): rejected;
@@ -128,16 +130,23 @@ steps and never kills a running stow subprocess.
    - destination inside the package already exists: the entry is `blocked` in the plan;
    - package name must match `[A-Za-z0-9._-]+` and must not start with `.`;
    - a staged directory containing a nested `.git`: warning, with a plan toggle
-     `remove .git after move` (git would otherwise treat it as an embedded repository);
+     `remove .git after move`, off by default (git would otherwise treat it as an embedded
+     repository). This scan happens only after staging, never in the Home preview. A scan
+     error blocks the affected entry and is displayed with its reason; refresh retries it;
    - first path component of the staged entry starts with `dot-`: rejected (not reversible
      under `--dotfiles`);
    - target and dotfiles on different devices (`Stat_t.Dev`): hard error before any move.
 4. The Staged panel and the Staged plan main context show, grouped by package: moves
    (`~/.zshrc → zsh/dot-zshrc`, directories with file counts), expected links (computed from
    the mapping, because a real stow dry run is only possible after the move), the stow command,
-   warnings and blocked entries.
-5. `enter` opens Confirm, then execution runs **one transaction per package**; a failure in
-   the second package does not undo the first. Per package:
+   warnings and blocked entries. In the Staged side panel a blocked entry keeps its path row,
+   which stays selectable and can be unstaged, and shows `✘ <reason>` on the line below it.
+   Execution failures are shown once per package, under the package header.
+5. `enter` on a ready plan revalidates it in the background and opens Confirm only when the
+   current result arrives. Applying while a scan is pending shows `Scan in progress` and
+   does not queue execution. Changing staging during revalidation cancels the Apply intent.
+   After confirmation execution runs **one transaction per package**; a failure in the
+   second package does not undo the first. Per package:
    1. `MkdirAll` for package directories, remembering which ones were created;
    2. `os.Rename` each entry, appending every move to a journal;
    3. `stow -n -v -R <pkg>`: on conflict, roll back the journal, remove the created
@@ -223,7 +232,7 @@ dim, staged entries accent, ok green, replaced red, warning yellow.
 | [0] | Status   | `~/dotfiles → ~  stow 2.4.1  git 1*`, one line, fixed height    | `c commit`, `R restow all`                          |
 | [1] | Packages | state glyph, name, `*` when dirty in git                        | `enter` focus main, `r restore`, `R restow`, `c commit` |
 | [2] | Home     | target tree; dim `[zsh]` badge = managed (not selectable, not expandable), accent `→ git` = staged | `space stage`, `u unstage`, `←→ fold`, `/ filter` |
-| [3] | Staged   | session staging grouped by package                             | `enter apply`, `u unstage`, `e rename package`      |
+| [3] | Staged   | session staging grouped by package; `✘ reason` under a blocked path, per-package line for execution failures | `enter apply`, `u unstage`, `e rename package`      |
 | [4] | Issues   | doctor problems only: replaced / missing / foreign / unnormalized | `f fix`, `D diff`                                 |
 
 Global keys: `1-4` switch panels (`0` Status), `tab` next panel, `?` full key list, `+` / `_`
@@ -247,9 +256,11 @@ The main panel content follows the focused panel and its highlighted item:
   `r restore entries`). `space` marks the highlighted link point with `✓` and the summary line
   counts the marks; `r` opens the Restore plan for the marked entries, or for the highlighted
   one when nothing is marked.
-- **Home: ~/path**: kind, size, warnings (`⚠ contains .git/`), directory listing or head of
+- **Home: ~/path**: kind, size, directory listing or head of
   the file, `Would become: <pkg>/dot-config/ghostty/`, `Expected link: …`. File counting stops
-  at `mainpanel.CountCap` (2000) and shows `2000+ files`. Symlinks that are not managed are
+  at `mainpanel.CountCap` (2000) and shows `2000+ files`. Preview reads and file counts run
+  in the background with a local spinner; Home does not search for nested `.git` entries.
+  Symlinks that are not managed are
   also non-selectable and non-expandable, since staging rejects every symlink anyway. The `/`
   filter matches only visible (expanded) rows by design; a deep search would be a separate
   asynchronous mode.
@@ -257,7 +268,8 @@ The main panel content follows the focused panel and its highlighted item:
   with reasons, toggles such as `[x] remove .git after move`. The toggle is **per package**,
   driven by the package highlighted in the Staged side panel and toggled with `x` (M3 decision:
   a per-warning cursor would need a second cursor inside main with no key left to drive it).
-  `›` marks the highlighted package in the plan.
+  `›` marks the highlighted package in the plan. Changing the toggle updates the existing
+  plan without another filesystem scan.
 - **Restore plan: X**: `zsh/dot-zshrc → ~/.zshrc  ✔ linked` per link point,
   `Then: remove empty ~/dotfiles/zsh`, dirty-git warning; blocked variant
   `✘ ~/.zshrc is a regular file → fix in Issues first`.
@@ -362,13 +374,42 @@ Operation flow: Confirm → main becomes Log → Commit popup → every panel re
   `charmbracelet/x/ansi` or an equivalent already pulled in by the pinned dependencies).
 - `layout.go` exposes pure functions `(W, H, focus, mode) → rectangles`, table-tested at
   `60×16`, `80×24`, `100×30`, `70×18`, `200×50`.
+- Adopt planning runs in a `tea.Cmd` over a staging snapshot. Every staging change advances
+  its version, cancels obsolete work and replaces the pending snapshot. At most one plan
+  worker and one latest pending request exist; only the current version can update the plan
+  or open Apply confirmation. `BuildAdoptPlanContext` and `HasNestedGitContext` check
+  cancellation during directory traversal; the original functions wrap them for callers
+  that do not need cancellation. The domain remains independent of Bubble Tea.
+- Home's initial load, refresh and lazy child loading use asynchronous commands and retain
+  the existing sort order. The tree keeps one in-flight load per path, identified by path and
+  request generation: collapsing a folder cancels its load, a reload cancels every load, and a
+  late or stale result neither reopens a collapsed folder nor replaces newer children. The
+  initial load goes through the same refresh path as `ctrl+r`. Preview work is limited to one
+  active request and the latest pending request, cancelling on selection changes; a result
+  is applied only when its path and generation match the current selection. Tree badges are
+  recalculated when staging or loaded data changes, not on cursor movement; the managed
+  package travels on the node (`Node.Managed`) and is rendered by the Home panel.
+- Bubbles spinners indicate local background work. Commands return messages; only `Update`
+  applies results to model state. Spinner ticks stop when no work remains. Scan results are
+  not persisted or reused as a long-lived cache.
 
 ## Known performance debt
 
-`dotfiles.HasNestedGit` walks a staged directory without a budget and runs on every cursor
-move onto a directory in Home (measured 4.6 ms on 10k files warm; a `node_modules`-sized tree
-will be tens to hundreds of ms). Fix candidates, not scheduled: a visited-entry budget in
-`HasNestedGit`, or running the Home entry inspection as a `tea.Cmd` with a spinner.
+Nested `.git` detection still traverses staged directories without a visited-entry budget,
+but now runs in a cancellable background plan worker, never on Home cursor movement. Large
+trees can therefore take time to prepare; Apply stays unavailable until the current scan
+finishes. Cancellation is cooperative between filesystem operations and cannot interrupt an
+individual blocked filesystem call.
+
+Home previews, capped file counts and child directory reads also run in the background.
+Reading and sorting a very wide directory still costs time and memory proportional to its
+entries, and rebuilding visible tree rows or badges still costs time proportional to loaded
+data. Cursor movement avoids those scans and badge updates. Performance scenarios live in
+`internal/tui/perf_test.go` (benchmarks for cursor movement over a flat 5000-entry directory
+and a deep subtree, plus a guard test asserting that a cursor move calls neither the tree
+loader nor the entry inspection synchronously) and `internal/dotfiles/plan_bench_test.go`
+(the plan scan alone on the deep subtree). They use temporary directories only and are not
+run by `go test` without `-bench`. No persistent scan cache or new dependency is introduced.
 
 ## v1.1
 

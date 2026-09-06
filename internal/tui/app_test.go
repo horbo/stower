@@ -26,8 +26,7 @@ func newTestModel(t *testing.T) tea.Model {
 	}
 
 	model := New(config.Paths{Target: root, Dotfiles: dotfilesDir}, "2.4.1")
-	updated, _ := model.Update(model.Init()())
-	return declineGitInit(updated)
+	return declineGitInit(deliverStagingCmd(t, model, model.Init()))
 }
 
 func declineGitInit(model tea.Model) tea.Model {

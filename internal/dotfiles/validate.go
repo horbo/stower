@@ -1,6 +1,7 @@
 package dotfiles
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -92,6 +93,13 @@ func DedupeStaging(staging Staging) (Staging, []string) {
 }
 
 func HasNestedGit(root string) (bool, error) {
+	return HasNestedGitContext(context.Background(), root)
+}
+
+func HasNestedGitContext(ctx context.Context, root string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	info, err := os.Lstat(root)
 	if err != nil {
 		return false, err
@@ -101,6 +109,9 @@ func HasNestedGit(root string) (bool, error) {
 	}
 	found := false
 	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if err != nil {
 			return err
 		}

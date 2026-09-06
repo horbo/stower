@@ -93,14 +93,13 @@ func TestPackageEntryRestoreUI(t *testing.T) {
 	for _, name := range []string{".other", ".third"} {
 		path := filepath.Join(m.paths.Target, name)
 		write(t, path, name+"\n")
-		m.stage(path, "misc")
+		m = stageAndWait(t, m, path, "misc")
 	}
 	m.focus = Staged
-	updated, _ := m.apply()
-	m = runApply(t, updated.(Model))
+	m = runApply(t, applyAndWait(t, m))
 
 	m = focusPackage(t, m, "misc")
-	updated, _ = m.Update(stagingKeyMsg("space"))
+	updated, _ := m.Update(stagingKeyMsg("space"))
 	m = press(t, updated, "j").(Model)
 	updated, _ = m.Update(stagingKeyMsg("space"))
 	m = updated.(Model)

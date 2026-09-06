@@ -20,10 +20,9 @@ func prepareApply(t *testing.T) Model {
 	t.Helper()
 	model, paths := newStagingModel(t)
 	m := model.(Model)
-	m.stage(filepath.Join(paths.Target, ".bar"), "misc")
+	m = stageAndWait(t, m, filepath.Join(paths.Target, ".bar"), "misc")
 	m.focus = Staged
-	updated, _ := m.apply()
-	m = updated.(Model)
+	m = applyAndWait(t, m)
 	if m.popup != popupConfirm || !strings.Contains(m.View().Content, "Apply staged plan") {
 		t.Fatal("confirmation not rendered")
 	}
@@ -44,8 +43,7 @@ func runApply(t *testing.T, m Model) Model {
 			m = updated.(Model)
 			if m.exec == nil {
 				if next != nil {
-					updated, _ = m.Update(next())
-					m = updated.(Model)
+					m = deliverAll(t, m, next).(Model)
 				}
 				return m
 			}
@@ -61,9 +59,8 @@ func TestApplyRealStowAndRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := prepareApply(t)
-	m.stage(filepath.Join(m.paths.Target, ".config", "foo"), "foo")
-	updated, _ := m.apply()
-	m = updated.(Model)
+	m = stageAndWait(t, m, filepath.Join(m.paths.Target, ".config", "foo"), "foo")
+	m = applyAndWait(t, m)
 	m = runApply(t, m)
 	if len(m.staging) != 0 || m.status.Running() {
 		t.Fatal("operation did not clear staging and running state")
@@ -97,8 +94,8 @@ func TestApplyDestinationRaceKeepsSource(t *testing.T) {
 	if err != nil || string(data) != "x\n" {
 		t.Fatalf("source changed: %q %v", data, err)
 	}
-	if len(m.staging) != 1 || !strings.Contains(m.failures["misc"], "destination already exists") {
-		t.Fatalf("failure not staged: %v", m.failures)
+	if len(m.staging) != 1 || !strings.Contains(m.blocked[filepath.Join(m.paths.Target, ".bar")], "destination already exists") {
+		t.Fatalf("failure not staged: %v %v", m.failures, m.blocked)
 	}
 }
 
@@ -108,10 +105,9 @@ func TestApplyKeepsBlockedEntryInSuccessfulPackage(t *testing.T) {
 	write(t, path, "keep")
 	mkdir(t, filepath.Join(m.paths.Dotfiles, "misc"))
 	write(t, filepath.Join(m.paths.Dotfiles, "misc", "dot-other"), "existing")
-	m.stage(path, "misc")
+	m = stageAndWait(t, m, path, "misc")
 	m.runner = &applyRunner{}
-	updated, _ := m.apply()
-	m = updated.(Model)
+	m = applyAndWait(t, m)
 	m = runApply(t, m)
 	if len(m.staging) != 1 || m.staging[path] != "misc" {
 		t.Fatalf("blocked entry lost: %v", m.staging)
@@ -199,12 +195,11 @@ func TestCtrlCCancelsWithoutQuitting(t *testing.T) {
 
 func TestApplyConflictRollsBackOnlyFailedPackage(t *testing.T) {
 	m := prepareApply(t)
-	m.stage(filepath.Join(m.paths.Target, ".config", "foo"), "foo")
+	m = stageAndWait(t, m, filepath.Join(m.paths.Target, ".config", "foo"), "foo")
 	mkdir(t, filepath.Join(m.paths.Dotfiles, "misc"))
 	write(t, filepath.Join(m.paths.Dotfiles, "misc", "dot-conflict"), "repository")
 	write(t, filepath.Join(m.paths.Target, ".conflict"), "target")
-	updated, _ := m.apply()
-	m = updated.(Model)
+	m = applyAndWait(t, m)
 	m = runApply(t, m)
 	if len(m.staging) != 1 || m.staging[filepath.Join(m.paths.Target, ".bar")] != "misc" {
 		t.Fatalf("staging = %v", m.staging)

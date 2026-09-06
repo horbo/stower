@@ -1,6 +1,7 @@
 package panels
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -42,7 +43,6 @@ type Home struct {
 	paths   config.Paths
 	home    string
 	tree    *components.Tree
-	managed map[string]string
 	staging dotfiles.Staging
 	width   int
 	height  int
@@ -55,12 +55,11 @@ func NewHome(paths config.Paths, home string, st styles.Styles) *Home {
 		paths:   paths,
 		home:    home,
 		tree:    components.NewTree(st),
-		managed: map[string]string{},
 		staging: dotfiles.Staging{},
 		st:      st,
 		keys:    defaultHomeKeyMap(),
 	}
-	p.tree.SetLoader(p.load)
+	p.tree.SetContextLoader(p.loadContext)
 	p.tree.SetRoot(components.Node{
 		Path:       paths.Target,
 		Name:       components.DisplayPath(paths.Target, home),
@@ -76,10 +75,10 @@ func (p *Home) SetStaging(staging dotfiles.Staging) {
 	p.applyBadges()
 }
 
-func (p *Home) Reload() {
-	p.managed = map[string]string{}
-	p.tree.Reload()
+func (p *Home) Reload() tea.Cmd {
+	cmd := p.tree.ReloadAsync()
 	p.applyBadges()
+	return cmd
 }
 
 func (p *Home) Selected() (components.Node, bool) {
@@ -114,7 +113,9 @@ func (p *Home) Update(msg tea.Msg) tea.Cmd {
 		}
 	}
 	cmd := p.tree.Update(msg)
-	p.applyBadges()
+	if _, ok := msg.(components.TreeLoadedMsg); ok {
+		p.applyBadges()
+	}
 	return cmd
 }
 
@@ -153,8 +154,8 @@ func (p *Home) applyBadges() {
 			node.BadgeStyle = p.st.Accent
 			return
 		}
-		if pkg, ok := p.managed[node.Path]; ok {
-			node.Badge = "[" + pkg + "]"
+		if node.Managed != "" {
+			node.Badge = "[" + node.Managed + "]"
 			node.BadgeStyle = p.st.Dim
 			return
 		}
@@ -163,13 +164,19 @@ func (p *Home) applyBadges() {
 	})
 }
 
-func (p *Home) load(path string) ([]components.Node, error) {
+func (p *Home) loadContext(ctx context.Context, path string) ([]components.Node, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		return nil, err
 	}
 	nodes := make([]components.Node, 0, len(entries))
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		full := filepath.Join(path, entry.Name())
 		if full == p.paths.Dotfiles {
 			continue
@@ -181,7 +188,7 @@ func (p *Home) load(path string) ([]components.Node, error) {
 				node.IsDir = true
 			}
 			if pkg, ok := dotfiles.ManagedBy(p.paths, full); ok {
-				p.managed[full] = pkg
+				node.Managed = pkg
 			}
 		default:
 			node.Selectable = true
