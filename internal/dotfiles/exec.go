@@ -53,6 +53,7 @@ type Event struct {
 
 type Runner interface {
 	DryRunRestow(pkg string) stow.Result
+	DryRunRestowExcluding(pkg string, entries []string) stow.Result
 	Restow(pkgs ...string) stow.Result
 	Unstow(pkg string) stow.Result
 	RestowExcluding(pkg string, entries []string) stow.Result

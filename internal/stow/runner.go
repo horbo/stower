@@ -165,7 +165,15 @@ func (w *lockedWriter) Write(p []byte) (int, error) {
 }
 
 func (r Runner) RestowExcluding(pkg string, entries []string) Result {
-	flags := []string{"--dotfiles", "-v", "-R"}
+	return r.restowExcluding([]string{"--dotfiles", "-v", "-R"}, pkg, entries)
+}
+
+func (r Runner) DryRunRestowExcluding(pkg string, entries []string) Result {
+	return r.restowExcluding([]string{"--dotfiles", "-n", "-v", "-R"}, pkg, entries)
+}
+
+func (r Runner) restowExcluding(prefix []string, pkg string, entries []string) Result {
+	flags := append([]string(nil), prefix...)
 	for _, entry := range entries {
 		if !filepath.IsLocal(entry) || entry == "." {
 			return Result{Err: fmt.Errorf("invalid excluded entry: %s", entry)}

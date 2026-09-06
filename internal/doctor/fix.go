@@ -102,7 +102,8 @@ func Fix(ctx context.Context, paths config.Paths, issue Issue, action Action, ru
 		}
 		issue = *current
 		if action == Restow && issue.State == Missing {
-			result := runner.DryRunRestow(issue.Package)
+			others := otherConflicts(report, issue.Entry.PkgRel)
+			result := runner.DryRunRestowExcluding(issue.Package, others)
 			output(events, issue.Package, result)
 			if result.Err != nil {
 				return result.Err
@@ -110,7 +111,7 @@ func Fix(ctx context.Context, paths config.Paths, issue Issue, action Action, ru
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			result = runner.Restow(issue.Package)
+			result = runner.RestowExcluding(issue.Package, others)
 			output(events, issue.Package, result)
 			return result.Err
 		}
@@ -125,6 +126,16 @@ func Fix(ctx context.Context, paths config.Paths, issue Issue, action Action, ru
 		}
 		return replace(ctx, paths, issue, action, runner, events)
 	})
+}
+
+func otherConflicts(report PackageReport, pkgRel string) []string {
+	var others []string
+	for _, item := range report.Entries {
+		if item.State != OK && item.State != Missing && item.Entry.PkgRel != pkgRel {
+			others = append(others, item.Entry.PkgRel)
+		}
+	}
+	return others
 }
 
 type backupFix struct {
@@ -148,6 +159,7 @@ func (f backupFix) run(ctx context.Context) error {
 			excluded = append(excluded, item.Entry.PkgRel)
 		}
 	}
+	others := otherConflicts(report, f.issue.Entry.PkgRel)
 	if err := dotfiles.CheckSameDevice(f.paths); err != nil {
 		return err
 	}
@@ -195,7 +207,7 @@ func (f backupFix) run(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return rollback(err)
 	}
-	dry := f.runner.DryRunRestow(f.issue.Package)
+	dry := f.runner.DryRunRestowExcluding(f.issue.Package, others)
 	output(f.events, f.issue.Package, dry)
 	if dry.Err != nil {
 		return rollback(dry.Err)
@@ -204,7 +216,7 @@ func (f backupFix) run(ctx context.Context) error {
 		return rollback(err)
 	}
 	attempted = true
-	result := f.runner.Restow(f.issue.Package)
+	result := f.runner.RestowExcluding(f.issue.Package, others)
 	output(f.events, f.issue.Package, result)
 	if result.Err != nil {
 		return rollback(result.Err)

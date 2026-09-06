@@ -225,6 +225,16 @@ func (r failingRunner) DryRunRestow(pkg string) stow.Result {
 	return r.Runner.DryRunRestow(pkg)
 }
 
+func (r failingRunner) DryRunRestowExcluding(pkg string, entries []string) stow.Result {
+	if r.cancel != nil {
+		r.cancel()
+	}
+	if r.dryFail {
+		return stow.Result{Err: errors.New("forced dry-run failure")}
+	}
+	return r.Runner.DryRunRestowExcluding(pkg, entries)
+}
+
 func TestFixRollback(t *testing.T) {
 	for _, action := range []Action{KeepTarget, KeepRepo} {
 		t.Run(string(action), func(t *testing.T) {
@@ -379,6 +389,12 @@ func (r cancelAfterRestow) Restow(pkgs ...string) stow.Result {
 	return result
 }
 
+func (r cancelAfterRestow) RestowExcluding(pkg string, entries []string) stow.Result {
+	result := r.Runner.RestowExcluding(pkg, entries)
+	r.cancel()
+	return result
+}
+
 func TestFixRollbackPreservesOtherLinks(t *testing.T) {
 	for _, action := range []Action{KeepTarget, KeepRepo} {
 		t.Run(string(action), func(t *testing.T) {
@@ -441,12 +457,17 @@ func TestUnfoldedDirectoryWithMissingLinks(t *testing.T) {
 	issueFor(t, paths, "pkg", OK)
 }
 
-type failingRestow struct {
+type failFirstRestow struct {
 	stow.Runner
+	failed bool
 }
 
-func (r failingRestow) Restow(pkgs ...string) stow.Result {
-	return stow.Result{Err: errors.New("forced restow failure")}
+func (r *failFirstRestow) RestowExcluding(pkg string, entries []string) stow.Result {
+	if !r.failed {
+		r.failed = true
+		return stow.Result{Err: errors.New("forced restow failure")}
+	}
+	return r.Runner.RestowExcluding(pkg, entries)
 }
 
 func TestRelinkUnowned(t *testing.T) {
@@ -490,7 +511,7 @@ func TestRelinkRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	events := make(chan dotfiles.Event, 200)
-	summary := Fix(context.Background(), paths, issueFor(t, paths, "zsh", Unowned), Relink, failingRestow{Runner: runner}, events)
+	summary := Fix(context.Background(), paths, issueFor(t, paths, "zsh", Unowned), Relink, &failFirstRestow{Runner: runner}, events)
 	if summary.OK() {
 		t.Fatal("forced failure succeeded")
 	}
@@ -535,5 +556,141 @@ func TestRelinkRejectedForOtherStates(t *testing.T) {
 	}
 	if result := doFix(t, paths, issueFor(t, paths, "zsh", Unowned), KeepRepo, runner); result.OK() {
 		t.Fatal("keep repo accepted for an unowned entry")
+	}
+}
+
+func absoluteLink(t *testing.T, paths config.Paths, pkg, pkgRel string) {
+	t.Helper()
+	repo := filepath.Join(paths.Dotfiles, pkg, pkgRel)
+	put(t, repo, pkgRel)
+	target := filepath.Join(paths.Target, dotfiles.PackageToTarget(pkgRel))
+	if err := os.Symlink(repo, target); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func stateOf(t *testing.T, paths config.Paths, pkg, pkgRel string) State {
+	t.Helper()
+	report := InspectPackage(paths, pkg)
+	if report.Err != nil {
+		t.Fatal(report.Err)
+	}
+	for _, item := range report.Entries {
+		if item.Entry.PkgRel == pkgRel {
+			return item.State
+		}
+	}
+	t.Fatalf("no entry %s in %+v", pkgRel, report)
+	return OK
+}
+
+func issueOf(t *testing.T, paths config.Paths, pkg, pkgRel string) Issue {
+	t.Helper()
+	report := InspectPackage(paths, pkg)
+	if report.Err != nil {
+		t.Fatal(report.Err)
+	}
+	for _, item := range report.Entries {
+		if item.Entry.PkgRel == pkgRel {
+			return item
+		}
+	}
+	t.Fatalf("no entry %s in %+v", pkgRel, report)
+	return Issue{}
+}
+
+func assertNoBackup(t *testing.T, paths config.Paths) {
+	t.Helper()
+	if backups, _ := filepath.Glob(filepath.Join(paths.Dotfiles, ".stower-backup-*")); len(backups) != 0 {
+		t.Fatal(backups)
+	}
+}
+
+func TestRelinkOneOfSeveralUnownedEntries(t *testing.T) {
+	paths, runner := fixture(t)
+	absoluteLink(t, paths, "zsh", "dot-zshrc")
+	absoluteLink(t, paths, "zsh", "dot-zshenv")
+	envRepo := filepath.Join(paths.Dotfiles, "zsh", "dot-zshenv")
+
+	if summary := doFix(t, paths, issueOf(t, paths, "zsh", "dot-zshrc"), Relink, runner); !summary.OK() {
+		t.Fatal(summary.Err())
+	}
+	dest, err := os.Readlink(filepath.Join(paths.Target, ".zshrc"))
+	if err != nil || dest != filepath.Join("dotfiles", "zsh", "dot-zshrc") {
+		t.Fatalf("readlink = %q, %v; want a relative stow link", dest, err)
+	}
+	if state := stateOf(t, paths, "zsh", "dot-zshrc"); state != OK {
+		t.Fatalf("dot-zshrc = %s, want ok", state)
+	}
+	if state := stateOf(t, paths, "zsh", "dot-zshenv"); state != Unowned {
+		t.Fatalf("dot-zshenv = %s, want unowned", state)
+	}
+	if dest, err := os.Readlink(filepath.Join(paths.Target, ".zshenv")); err != nil || dest != envRepo {
+		t.Fatalf("the sibling link changed: %q, %v", dest, err)
+	}
+	assertNoBackup(t, paths)
+
+	if summary := doFix(t, paths, issueOf(t, paths, "zsh", "dot-zshenv"), Relink, runner); !summary.OK() {
+		t.Fatal(summary.Err())
+	}
+	for _, pkgRel := range []string{"dot-zshrc", "dot-zshenv"} {
+		if state := stateOf(t, paths, "zsh", pkgRel); state != OK {
+			t.Fatalf("%s = %s, want ok", pkgRel, state)
+		}
+	}
+	assertNoBackup(t, paths)
+	if result := runner.Restow("zsh"); result.Err != nil {
+		t.Fatalf("stow -R after both relinks: %v", result.Err)
+	}
+}
+
+func TestRestowMissingNextToUnownedSibling(t *testing.T) {
+	paths, runner := fixture(t)
+	absoluteLink(t, paths, "zsh", "dot-zshenv")
+	put(t, filepath.Join(paths.Dotfiles, "zsh", "dot-zshrc"), "repo")
+	envRepo := filepath.Join(paths.Dotfiles, "zsh", "dot-zshenv")
+
+	if state := stateOf(t, paths, "zsh", "dot-zshrc"); state != Missing {
+		t.Fatalf("dot-zshrc = %s, want missing", state)
+	}
+	if summary := doFix(t, paths, issueOf(t, paths, "zsh", "dot-zshrc"), Restow, runner); !summary.OK() {
+		t.Fatal(summary.Err())
+	}
+	if state := stateOf(t, paths, "zsh", "dot-zshrc"); state != OK {
+		t.Fatalf("dot-zshrc = %s, want ok", state)
+	}
+	if state := stateOf(t, paths, "zsh", "dot-zshenv"); state != Unowned {
+		t.Fatalf("dot-zshenv = %s, want unowned", state)
+	}
+	if dest, err := os.Readlink(filepath.Join(paths.Target, ".zshenv")); err != nil || dest != envRepo {
+		t.Fatalf("the sibling link changed: %q, %v", dest, err)
+	}
+}
+
+func TestRelinkRollbackWithUnownedSibling(t *testing.T) {
+	paths, runner := fixture(t)
+	absoluteLink(t, paths, "zsh", "dot-zshrc")
+	absoluteLink(t, paths, "zsh", "dot-zshenv")
+	repo := filepath.Join(paths.Dotfiles, "zsh", "dot-zshrc")
+	envRepo := filepath.Join(paths.Dotfiles, "zsh", "dot-zshenv")
+
+	summary := Fix(context.Background(), paths, issueOf(t, paths, "zsh", "dot-zshrc"), Relink, &failFirstRestow{Runner: runner}, nil)
+	if summary.OK() {
+		t.Fatal("forced failure succeeded")
+	}
+	if err := summary.Err(); err == nil || strings.Contains(err.Error(), "rollback") {
+		t.Fatalf("rollback did not complete cleanly: %v", err)
+	}
+	if dest, err := os.Readlink(filepath.Join(paths.Target, ".zshrc")); err != nil || dest != repo {
+		t.Fatalf("readlink = %q, %v; want the original link back", dest, err)
+	}
+	if dest, err := os.Readlink(filepath.Join(paths.Target, ".zshenv")); err != nil || dest != envRepo {
+		t.Fatalf("the sibling link changed: %q, %v", dest, err)
+	}
+	assertNoBackup(t, paths)
+	for _, pkgRel := range []string{"dot-zshrc", "dot-zshenv"} {
+		if state := stateOf(t, paths, "zsh", pkgRel); state != Unowned {
+			t.Fatalf("%s = %s, want unowned", pkgRel, state)
+		}
 	}
 }

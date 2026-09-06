@@ -188,13 +188,18 @@ it and at least one regular file sits where a link is expected; otherwise the do
 and reports the individual entries. An ordinary empty unfolded directory is therefore never
 offered as a destructive repair. `Keep TARGET` / `Keep REPO` move the losing copy to a
 `.stower-backup-*` directory inside dotfiles first and delete it only after a successful restow;
-a failed rollback keeps the backup and reports its path.
+a failed rollback keeps the backup and reports its path. Every single-entry fix restows the
+package with the other conflicting entries of that package (everything except `ok` and
+`missing`) passed to stow as `--ignore`, so a conflicting sibling never blocks the fix while
+missing siblings are still linked by the same restow; the rollback restow ignores the fixed
+entry as well.
 
-Stow decides ownership textually, not by inode (`Stow.pm`, `find_stowed_path`): a link is owned by stow
-only when the destination is relative and `join_paths(parent(target), link_dest)` starts
-with `abs2rel(realpath(dotfiles), realpath(target))`. An absolute destination is rejected
-outright, and so is a relative one written at the wrong depth or through a symlinked dotfiles
-path. Such a link resolves to the correct package entry, so an inode check calls it healthy,
+Stow decides ownership textually, not by inode (`Stow.pm`, `find_stowed_path`): a link is
+owned by stow only when the destination is relative and
+`join_paths(parent(target), link_dest)` starts with
+`abs2rel(realpath(dotfiles), realpath(target))`. An absolute destination is rejected outright,
+and so is a relative one written at the wrong depth or through a symlinked dotfiles path.
+Such a link resolves to the correct package entry, so an inode check calls it healthy,
 while `stow -R` fails with `existing target is not owned by stow` and `stow -D` silently skips
 it. `dotfiles.Linked` therefore requires both checks: `ResolvesTo` (inode) and `StowOwns`
 (stow's textual rule). Everything else is a conflict, which also blocks restore plans on the

@@ -38,6 +38,11 @@ func (f *fakeRunner) RestowExcluding(pkg string, entries []string) stow.Result {
 	return stow.Result{Args: []string{"stow", "-R", pkg}, Err: f.restowErr}
 }
 
+func (f *fakeRunner) DryRunRestowExcluding(pkg string, entries []string) stow.Result {
+	f.calls = append(f.calls, "dry-run-excluding "+pkg+" "+strings.Join(entries, ","))
+	return stow.Result{Args: []string{"stow", "-n", "-R", pkg}, Err: f.dryRunErr}
+}
+
 func collect(t *testing.T, run func(chan Event) Summary) (Summary, []Event) {
 	t.Helper()
 	events := make(chan Event, 256)
@@ -204,6 +209,10 @@ func (f *failingRunner) RestowExcluding(pkg string, entries []string) stow.Resul
 	return stow.Result{Args: []string{"stow", pkg}}
 }
 
+func (f *failingRunner) DryRunRestowExcluding(pkg string, entries []string) stow.Result {
+	return f.DryRunRestow(pkg)
+}
+
 func TestExecuteFatalPlan(t *testing.T) {
 	paths := newPaths(t)
 	writeFile(t, filepath.Join(paths.Target, ".zshrc"), "zsh")
@@ -302,6 +311,10 @@ func (u *unstowingRunner) Unstow(pkg string) stow.Result {
 
 func (u *unstowingRunner) RestowExcluding(pkg string, entries []string) stow.Result {
 	return stow.Result{Args: []string{"stow", "-R", pkg}}
+}
+
+func (u *unstowingRunner) DryRunRestowExcluding(pkg string, entries []string) stow.Result {
+	return stow.Result{Args: []string{"stow", "-n", "-R", pkg}}
 }
 
 func TestExecuteRestoreBlockedPlan(t *testing.T) {

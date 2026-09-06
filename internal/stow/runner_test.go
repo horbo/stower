@@ -224,6 +224,32 @@ func TestRestowExcludingArguments(t *testing.T) {
 	}
 }
 
+func TestDryRunRestowExcludingArguments(t *testing.T) {
+	runner := Runner{Bin: filepath.Join(t.TempDir(), "missing-stow"), Dotfiles: "/d", Target: "/t"}
+
+	result := runner.DryRunRestowExcluding("p", []string{"dot-bar", "dot-config/app", "plain/dot-keep"})
+	want := []string{runner.Bin, "--dotfiles", "-n", "-v", "-R",
+		"--ignore=^dot-bar$", "--ignore=^\\.config/app$", "--ignore=^plain/dot-keep$",
+		"-d", "/d", "-t", "/t", "p"}
+	if !reflect.DeepEqual(result.Args, want) {
+		t.Errorf("Args = %q, want %q", result.Args, want)
+	}
+
+	plain := runner.DryRunRestowExcluding("p", nil)
+	if !reflect.DeepEqual(plain.Args, runner.DryRunRestow("p").Args) {
+		t.Errorf("Args = %q, want the plain dry-run %q", plain.Args, runner.DryRunRestow("p").Args)
+	}
+	if bare := runner.RestowExcluding("p", nil); !reflect.DeepEqual(bare.Args, runner.Restow("p").Args) {
+		t.Errorf("Args = %q, want the plain restow %q", bare.Args, runner.Restow("p").Args)
+	}
+
+	for _, bad := range []string{"", ".", "..", "../x", "/abs"} {
+		if err := runner.DryRunRestowExcluding("p", []string{bad}).Err; err == nil {
+			t.Errorf("DryRunRestowExcluding(%q) accepted an invalid entry", bad)
+		}
+	}
+}
+
 func TestRestowExcludingWithRealStow(t *testing.T) {
 	bin := requireStow(t)
 	root := t.TempDir()

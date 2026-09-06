@@ -127,6 +127,9 @@ func (r *applyRunner) Unstow(pkg string) stow.Result     { return stow.Result{} 
 func (r *applyRunner) RestowExcluding(pkg string, entries []string) stow.Result {
 	return stow.Result{}
 }
+func (r *applyRunner) DryRunRestowExcluding(pkg string, entries []string) stow.Result {
+	return r.DryRunRestow(pkg)
+}
 
 func TestApplyCancellationRollsBackBeforeDone(t *testing.T) {
 	m := prepareApply(t)
