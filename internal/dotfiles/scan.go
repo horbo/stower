@@ -124,31 +124,35 @@ func walkPackageDir(paths config.Paths, pkg, relPkg string, out *[]Entry) error 
 	return nil
 }
 
-func ManagedBy(paths config.Paths, targetPath string) (string, bool) {
+type LinkInfo struct {
+	Target   string
+	Package  string
+	Dangling bool
+}
+
+func InspectLink(paths config.Paths, targetPath string) (LinkInfo, bool) {
 	info, err := os.Lstat(targetPath)
 	if err != nil || info.Mode()&fs.ModeSymlink == 0 {
-		return "", false
+		return LinkInfo{}, false
 	}
-	dest, err := resolveLink(targetPath)
+	dest, err := os.Readlink(targetPath)
 	if err != nil {
+		return LinkInfo{}, false
+	}
+	link := LinkInfo{Target: dest}
+	if _, err := os.Stat(targetPath); err != nil {
+		link.Dangling = true
+	}
+	link.Package = linkPackage(paths, targetPath, dest)
+	return link, true
+}
+
+func ManagedBy(paths config.Paths, targetPath string) (string, bool) {
+	info, ok := InspectLink(paths, targetPath)
+	if !ok || info.Dangling || info.Package == "" {
 		return "", false
 	}
-	root, err := filepath.EvalSymlinks(paths.Dotfiles)
-	if err != nil {
-		return "", false
-	}
-	rel, err := filepath.Rel(root, dest)
-	if err != nil {
-		return "", false
-	}
-	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", false
-	}
-	pkg := PackageOf(rel)
-	if pkg == "" {
-		return "", false
-	}
-	return pkg, true
+	return info.Package, true
 }
 
 func ResolvesTo(link, want string) bool {
@@ -181,6 +185,40 @@ func StowOwns(paths config.Paths, pkg string, entry Entry) bool {
 		return false
 	}
 	return filepath.Join(filepath.Dir(entry.TargetRel), dest) == filepath.Join(stowRel, pkg, entry.PkgRel)
+}
+
+func linkPackage(paths config.Paths, targetPath, dest string) string {
+	if resolved, err := resolveLink(targetPath); err == nil {
+		root, err := filepath.EvalSymlinks(paths.Dotfiles)
+		if err != nil {
+			return ""
+		}
+		return packageUnder(root, resolved)
+	}
+	lexical := dest
+	if !filepath.IsAbs(lexical) {
+		lexical = filepath.Join(filepath.Dir(targetPath), lexical)
+	}
+	lexical = filepath.Clean(lexical)
+	if pkg := packageUnder(paths.Dotfiles, lexical); pkg != "" {
+		return pkg
+	}
+	root, err := filepath.EvalSymlinks(paths.Dotfiles)
+	if err != nil {
+		return ""
+	}
+	return packageUnder(root, lexical)
+}
+
+func packageUnder(root, dest string) string {
+	rel, err := filepath.Rel(root, dest)
+	if err != nil {
+		return ""
+	}
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	return PackageOf(rel)
 }
 
 func resolveLink(link string) (string, error) {

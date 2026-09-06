@@ -120,6 +120,7 @@ func TestManagedBy(t *testing.T) {
 	symlink(t, filepath.Join(paths.Dotfiles, "zsh", "dot-zshrc"), filepath.Join(paths.Target, ".zshrc-abs"))
 	symlink(t, "elsewhere/file", filepath.Join(paths.Target, "foreign"))
 	symlink(t, "../dotfiles/zsh/dot-missing", filepath.Join(paths.Target, ".broken"))
+	symlink(t, filepath.Join(paths.Dotfiles, "zsh", "dot-missing"), filepath.Join(paths.Target, ".broken-abs"))
 	symlink(t, "../dotfiles", filepath.Join(paths.Target, "root"))
 
 	tests := []struct {
@@ -133,6 +134,7 @@ func TestManagedBy(t *testing.T) {
 		{name: "absolute link", path: ".zshrc-abs", wantPkg: "zsh", wantOK: true},
 		{name: "link outside dotfiles", path: "foreign"},
 		{name: "broken link", path: ".broken"},
+		{name: "broken absolute link", path: ".broken-abs"},
 		{name: "link to the dotfiles root", path: "root"},
 		{name: "regular file", path: "plain"},
 		{name: "missing path", path: "nope"},
@@ -161,6 +163,96 @@ func TestManagedByThroughSymlinkedDotfilesRoot(t *testing.T) {
 	pkg, ok := ManagedBy(paths, filepath.Join(paths.Target, ".zshrc"))
 	if !ok || pkg != "zsh" {
 		t.Errorf("ManagedBy = (%q, %v), want (%q, true)", pkg, ok, "zsh")
+	}
+}
+
+func TestInspectLink(t *testing.T) {
+	paths := newPaths(t)
+	writeFile(t, filepath.Join(paths.Dotfiles, "zsh", "dot-zshrc"), "x")
+	writeFile(t, filepath.Join(paths.Target, "plain"), "z")
+	writeFile(t, filepath.Join(paths.Target, "elsewhere", "file"), "z")
+
+	absolute := filepath.Join(paths.Dotfiles, "zsh", "dot-zshrc")
+	symlink(t, "../dotfiles/zsh/dot-zshrc", filepath.Join(paths.Target, ".zshrc"))
+	symlink(t, absolute, filepath.Join(paths.Target, ".zshrc-abs"))
+	symlink(t, "elsewhere/file", filepath.Join(paths.Target, "foreign"))
+	symlink(t, "../dotfiles/zsh/dot-missing", filepath.Join(paths.Target, ".broken"))
+	symlink(t, "../dotfiles", filepath.Join(paths.Target, "root"))
+
+	tests := []struct {
+		name   string
+		path   string
+		want   LinkInfo
+		wantOK bool
+	}{
+		{
+			name:   "relative link as stow writes it",
+			path:   ".zshrc",
+			want:   LinkInfo{Target: "../dotfiles/zsh/dot-zshrc", Package: "zsh"},
+			wantOK: true,
+		},
+		{
+			name:   "absolute link",
+			path:   ".zshrc-abs",
+			want:   LinkInfo{Target: absolute, Package: "zsh"},
+			wantOK: true,
+		},
+		{
+			name:   "link outside dotfiles",
+			path:   "foreign",
+			want:   LinkInfo{Target: "elsewhere/file"},
+			wantOK: true,
+		},
+		{
+			name:   "broken link into a package",
+			path:   ".broken",
+			want:   LinkInfo{Target: "../dotfiles/zsh/dot-missing", Package: "zsh", Dangling: true},
+			wantOK: true,
+		},
+		{
+			name:   "link to the dotfiles root",
+			path:   "root",
+			want:   LinkInfo{Target: "../dotfiles"},
+			wantOK: true,
+		},
+		{name: "regular file", path: "plain"},
+		{name: "missing path", path: "nope"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := InspectLink(paths, filepath.Join(paths.Target, test.path))
+			if ok != test.wantOK {
+				t.Fatalf("InspectLink(%q) ok = %v, want %v", test.path, ok, test.wantOK)
+			}
+			if !reflect.DeepEqual(got, test.want) {
+				t.Errorf("InspectLink(%q) = %+v, want %+v", test.path, got, test.want)
+			}
+		})
+	}
+}
+
+func TestInspectLinkThroughSymlinkedDotfilesRoot(t *testing.T) {
+	paths := newPaths(t)
+	real := filepath.Join(filepath.Dir(paths.Dotfiles), "real-dotfiles")
+	if err := os.Remove(paths.Dotfiles); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(real, "zsh", "dot-zshrc"), "x")
+	symlink(t, real, paths.Dotfiles)
+	symlink(t, "../dotfiles/zsh/dot-zshrc", filepath.Join(paths.Target, ".zshrc"))
+	symlink(t, "../dotfiles/zsh/dot-missing", filepath.Join(paths.Target, ".broken"))
+
+	got, ok := InspectLink(paths, filepath.Join(paths.Target, ".zshrc"))
+	want := LinkInfo{Target: "../dotfiles/zsh/dot-zshrc", Package: "zsh"}
+	if !ok || !reflect.DeepEqual(got, want) {
+		t.Errorf("InspectLink(.zshrc) = (%+v, %v), want (%+v, true)", got, ok, want)
+	}
+
+	got, ok = InspectLink(paths, filepath.Join(paths.Target, ".broken"))
+	want = LinkInfo{Target: "../dotfiles/zsh/dot-missing", Package: "zsh", Dangling: true}
+	if !ok || !reflect.DeepEqual(got, want) {
+		t.Errorf("InspectLink(.broken) = (%+v, %v), want (%+v, true)", got, ok, want)
 	}
 }
 
