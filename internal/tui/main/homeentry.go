@@ -2,6 +2,7 @@ package mainpanel
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 
@@ -26,48 +28,61 @@ const (
 	previewBytes = 64 * 1024
 )
 
-type entryFacts struct {
-	path      string
-	exists    bool
-	err       error
-	isDir     bool
-	isLink    bool
-	size      int64
-	files     int
-	capped    bool
-	nestedGit bool
-	names     []string
-	preview   []string
-	binary    bool
+type EntryFacts struct {
+	path    string
+	exists  bool
+	err     error
+	isDir   bool
+	isLink  bool
+	size    int64
+	files   int
+	capped  bool
+	names   []string
+	preview []string
+	binary  bool
 }
 
 type HomeEntry struct {
-	paths  config.Paths
-	home   string
-	path   string
-	pkg    string
-	staged bool
-	facts  entryFacts
-	width  int
-	height int
-	st     styles.Styles
-	vp     viewport.Model
+	paths   config.Paths
+	home    string
+	path    string
+	pkg     string
+	staged  bool
+	facts   EntryFacts
+	loading bool
+	width   int
+	height  int
+	st      styles.Styles
+	vp      viewport.Model
+	spin    spinner.Model
 }
 
 func NewHomeEntry(paths config.Paths, home string, st styles.Styles) *HomeEntry {
 	vp := viewport.New()
 	vp.FillHeight = false
-	return &HomeEntry{paths: paths, home: home, st: st, vp: vp}
+	return &HomeEntry{paths: paths, home: home, st: st, vp: vp, spin: spinner.New(spinner.WithSpinner(spinner.MiniDot))}
 }
+
+func (h *HomeEntry) StartLoading() tea.Cmd { return h.spin.Tick }
 
 func (h *HomeEntry) SetEntry(path, pkg string, staged bool) {
 	if path != h.facts.path {
-		h.facts = inspect(path)
+		h.facts = EntryFacts{path: path}
+		h.loading = path != ""
 		h.vp.SetYOffset(0)
 	}
 	h.path = path
 	h.pkg = pkg
 	h.staged = staged
+	h.render()
+}
+
+func (h *HomeEntry) SetFacts(path string, facts EntryFacts) {
+	if path != h.path {
+		return
+	}
+	h.facts = facts
+	h.loading = false
 	h.render()
 }
 
@@ -83,6 +98,15 @@ func (h *HomeEntry) SetSize(width, height int) {
 }
 
 func (h *HomeEntry) Update(msg tea.Msg) tea.Cmd {
+	if tick, ok := msg.(spinner.TickMsg); ok {
+		if !h.loading {
+			return nil
+		}
+		var cmd tea.Cmd
+		h.spin, cmd = h.spin.Update(tick)
+		h.render()
+		return cmd
+	}
 	vp, cmd := h.vp.Update(msg)
 	h.vp = vp
 	return cmd
@@ -130,14 +154,14 @@ func (h *HomeEntry) lines() []string {
 	if h.path == "" {
 		return []string{h.st.Dim.Render("no entry selected")}
 	}
+	if h.loading {
+		return []string{h.st.Dim.Render(h.spin.View() + " Loading…")}
+	}
 	if h.facts.err != nil {
 		return []string{h.st.Error.Render(components.Truncate("cannot read the entry: "+h.facts.err.Error(), h.width))}
 	}
 
 	lines := []string{h.st.Dim.Render(components.Truncate(h.summary(), h.width))}
-	if h.facts.nestedGit {
-		lines = append(lines, h.st.Warn.Render(components.Truncate("⚠ contains .git/", h.width)))
-	}
 	if h.facts.isLink {
 		lines = append(lines, h.st.Dim.Render(components.Truncate("a symlink cannot be staged", h.width)))
 	}
@@ -165,7 +189,7 @@ func (h *HomeEntry) summary() string {
 	return strings.Join(parts, " · ")
 }
 
-func kindOf(facts entryFacts) string {
+func kindOf(facts EntryFacts) string {
 	switch {
 	case !facts.exists:
 		return "missing"
@@ -233,8 +257,12 @@ func (h *HomeEntry) body() []string {
 	return lines
 }
 
-func inspect(path string) entryFacts {
-	facts := entryFacts{path: path}
+func InspectContext(ctx context.Context, path string) EntryFacts {
+	facts := EntryFacts{path: path}
+	if err := ctx.Err(); err != nil {
+		facts.err = err
+		return facts
+	}
 	if path == "" {
 		return facts
 	}
@@ -251,20 +279,31 @@ func inspect(path string) entryFacts {
 		return facts
 	}
 	if facts.isDir {
-		facts.files, facts.capped = countFiles(path, CountCap)
+		facts.files, facts.capped = countFilesContext(ctx, path, CountCap)
+		if err := ctx.Err(); err != nil {
+			facts.err = err
+			return facts
+		}
 		facts.names = listNames(path, listedNames)
-		nested, err := dotfiles.HasNestedGit(path)
-		facts.nestedGit = err == nil && nested
 		return facts
 	}
 	facts.preview, facts.binary = head(path, previewLines)
 	return facts
 }
 
+func inspect(path string) EntryFacts { return InspectContext(context.Background(), path) }
+
 func countFiles(root string, limit int) (int, bool) {
+	return countFilesContext(context.Background(), root, limit)
+}
+
+func countFilesContext(ctx context.Context, root string, limit int) (int, bool) {
 	count := 0
 	capped := false
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if err != nil {
 			if path == root {
 				return err

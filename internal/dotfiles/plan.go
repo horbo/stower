@@ -1,6 +1,7 @@
 package dotfiles
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -73,7 +74,15 @@ func (p AdoptPlan) Runnable() bool {
 }
 
 func BuildAdoptPlan(paths config.Paths, staging Staging) AdoptPlan {
+	return BuildAdoptPlanContext(context.Background(), paths, staging)
+}
+
+func BuildAdoptPlanContext(ctx context.Context, paths config.Paths, staging Staging) AdoptPlan {
 	plan := AdoptPlan{Paths: paths}
+	if err := ctx.Err(); err != nil {
+		plan.Fatal = err
+		return plan
+	}
 	kept, messages := DedupeStaging(staging)
 	plan.Messages = messages
 	if err := CheckSameDevice(paths); err != nil {
@@ -91,14 +100,21 @@ func BuildAdoptPlan(paths config.Paths, staging Staging) AdoptPlan {
 	sort.Strings(names)
 
 	for _, pkg := range names {
+		if err := ctx.Err(); err != nil {
+			plan.Fatal = err
+			return plan
+		}
 		staged := byPackage[pkg]
 		sort.Strings(staged)
-		plan.Packages = append(plan.Packages, buildPackageAdopt(paths, pkg, staged))
+		plan.Packages = append(plan.Packages, buildPackageAdopt(ctx, paths, pkg, staged))
+	}
+	if err := ctx.Err(); err != nil {
+		plan.Fatal = err
 	}
 	return plan
 }
 
-func buildPackageAdopt(paths config.Paths, pkg string, staged []string) PackageAdopt {
+func buildPackageAdopt(ctx context.Context, paths config.Paths, pkg string, staged []string) PackageAdopt {
 	out := PackageAdopt{Package: pkg}
 	if err := ValidatePackageName(pkg); err != nil {
 		for _, path := range staged {
@@ -108,6 +124,9 @@ func buildPackageAdopt(paths config.Paths, pkg string, staged []string) PackageA
 	}
 
 	for _, path := range staged {
+		if err := ctx.Err(); err != nil {
+			return out
+		}
 		if err := ValidateStagingPath(paths, path); err != nil {
 			out.Blocked = append(out.Blocked, Blocked{Path: path, Package: pkg, Reason: err.Error()})
 			continue
@@ -130,12 +149,18 @@ func buildPackageAdopt(paths config.Paths, pkg string, staged []string) PackageA
 			continue
 		}
 
+		nested, err := HasNestedGitContext(ctx, path)
+		if err != nil {
+			if ctx.Err() != nil {
+				return out
+			}
+			out.Blocked = append(out.Blocked, Blocked{Path: path, Package: pkg, Reason: err.Error()})
+			continue
+		}
 		out.Moves = append(out.Moves, Move{From: path, To: dest})
 		out.CreateDirs = appendDir(out.CreateDirs, filepath.Dir(dest))
 		out.ExpectedLinks = append(out.ExpectedLinks, expectedLink(path, dest))
-
-		nested, err := HasNestedGit(path)
-		if err == nil && nested {
+		if nested {
 			out.Warnings = append(out.Warnings, Warning{
 				Path:    path,
 				Package: pkg,

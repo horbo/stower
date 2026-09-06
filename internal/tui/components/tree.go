@@ -1,9 +1,11 @@
 package components
 
 import (
+	"context"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -25,11 +27,21 @@ type Node struct {
 	IsDir      bool
 	Badge      string
 	BadgeStyle lipgloss.Style
+	Managed    string
 	Selectable bool
 	Expandable bool
 }
 
 type Loader func(path string) ([]Node, error)
+type ContextLoader func(context.Context, string) ([]Node, error)
+
+type TreeLoadedMsg struct {
+	Tree       *Tree
+	Path       string
+	Generation int
+	Nodes      []Node
+	Err        error
+}
 
 type Row struct {
 	Node     Node
@@ -63,12 +75,20 @@ func defaultTreeKeyMap() treeKeyMap {
 	}
 }
 
+type treeLoad struct {
+	generation int
+	cancel     context.CancelFunc
+}
+
 type Tree struct {
-	root     Node
-	loader   Loader
-	children map[string][]Node
-	expanded map[string]bool
-	errs     map[string]error
+	root           Node
+	loader         Loader
+	contextLoader  ContextLoader
+	children       map[string][]Node
+	expanded       map[string]bool
+	errs           map[string]error
+	inflight       map[string]*treeLoad
+	loadGeneration int
 
 	rows   []Row
 	cursor int
@@ -83,6 +103,7 @@ type Tree struct {
 
 	st   styles.Styles
 	keys treeKeyMap
+	spin spinner.Model
 }
 
 func NewTree(st styles.Styles) *Tree {
@@ -93,11 +114,15 @@ func NewTree(st styles.Styles) *Tree {
 		children: map[string][]Node{},
 		expanded: map[string]bool{},
 		errs:     map[string]error{},
+		inflight: map[string]*treeLoad{},
 		input:    input,
 		st:       st,
 		keys:     defaultTreeKeyMap(),
+		spin:     spinner.New(spinner.WithSpinner(spinner.MiniDot)),
 	}
 }
+
+func (t *Tree) SetContextLoader(loader ContextLoader) { t.contextLoader = loader }
 
 func (t *Tree) SetLoader(loader Loader) {
 	t.loader = loader
@@ -110,13 +135,16 @@ func (t *Tree) SetRoot(root Node) {
 		return
 	}
 	t.root = root
+	t.cancelAll()
 	t.children = map[string][]Node{}
 	t.expanded = map[string]bool{}
 	t.errs = map[string]error{}
 	t.cursor = 0
 	t.offset = 0
-	if root.Expandable {
+	if root.Expandable && t.contextLoader == nil {
 		t.expand(root.Path)
+	} else if root.Expandable {
+		t.expanded[root.Path] = true
 	}
 	t.rebuild()
 }
@@ -130,6 +158,19 @@ func (t *Tree) Reload() {
 		}
 	}
 	t.rebuild()
+}
+
+func (t *Tree) ReloadAsync() tea.Cmd {
+	t.cancelAll()
+	t.children = map[string][]Node{}
+	t.errs = map[string]error{}
+	for path := range t.expanded {
+		if path != t.root.Path {
+			delete(t.expanded, path)
+		}
+	}
+	t.rebuild()
+	return t.requestLoad(t.root.Path)
 }
 
 func (t *Tree) Apply(fn func(node *Node)) {
@@ -177,6 +218,17 @@ func (t *Tree) LoadError(path string) error {
 }
 
 func (t *Tree) Update(msg tea.Msg) tea.Cmd {
+	if tick, ok := msg.(spinner.TickMsg); ok {
+		if len(t.inflight) == 0 {
+			return nil
+		}
+		var cmd tea.Cmd
+		t.spin, cmd = t.spin.Update(tick)
+		return cmd
+	}
+	if loaded, ok := msg.(TreeLoadedMsg); ok {
+		return t.acceptLoaded(loaded)
+	}
 	pressed, ok := msg.(tea.KeyPressMsg)
 	if !ok {
 		return nil
@@ -207,7 +259,7 @@ func (t *Tree) Update(msg tea.Msg) tea.Cmd {
 		t.cursor = max(0, len(t.rows)-1)
 		t.clampOffset()
 	case key.Matches(pressed, t.keys.Expand):
-		t.expandSelected()
+		return t.expandSelected()
 	case key.Matches(pressed, t.keys.Collapse):
 		t.collapseSelected()
 	}
@@ -244,19 +296,20 @@ func (t *Tree) move(delta int) {
 	t.clampOffset()
 }
 
-func (t *Tree) expandSelected() {
+func (t *Tree) expandSelected() tea.Cmd {
 	row, ok := t.Selected()
 	if !ok || !row.Node.Expandable {
-		return
+		return nil
 	}
 	if t.expanded[row.Node.Path] {
 		if t.cursor+1 < len(t.rows) {
 			t.move(1)
 		}
-		return
+		return nil
 	}
-	t.expand(row.Node.Path)
+	cmd := t.expand(row.Node.Path)
 	t.rebuild()
+	return cmd
 }
 
 func (t *Tree) collapseSelected() {
@@ -265,7 +318,7 @@ func (t *Tree) collapseSelected() {
 		return
 	}
 	if row.Node.Expandable && t.expanded[row.Node.Path] {
-		delete(t.expanded, row.Node.Path)
+		t.collapse(row.Node.Path)
 		t.rebuild()
 		return
 	}
@@ -278,63 +331,133 @@ func (t *Tree) collapseSelected() {
 	}
 }
 
-func (t *Tree) Click(y int) {
+func (t *Tree) Click(y int) tea.Cmd {
 	if t.filtering && y >= t.visibleHeight() {
-		return
+		return nil
 	}
 	row, ok := RowAt(t.offset, y, len(t.rows))
 	if !ok {
-		return
+		return nil
 	}
 	if row == t.cursor {
-		t.toggleSelected()
-		return
+		return t.toggleSelected()
 	}
 	t.cursor = row
 	t.clampOffset()
+	return nil
 }
 
 func (t *Tree) Scroll(delta int) {
 	t.move(delta)
 }
 
-func (t *Tree) toggleSelected() {
+func (t *Tree) toggleSelected() tea.Cmd {
 	row, ok := t.Selected()
 	if !ok || !row.Node.Expandable {
-		return
+		return nil
 	}
 	if t.expanded[row.Node.Path] {
-		delete(t.expanded, row.Node.Path)
+		t.collapse(row.Node.Path)
 		t.rebuild()
-		return
+		return nil
 	}
-	t.expand(row.Node.Path)
+	cmd := t.expand(row.Node.Path)
 	t.rebuild()
+	return cmd
 }
 
-func (t *Tree) expand(path string) {
-	t.load(path)
+func (t *Tree) expand(path string) tea.Cmd {
+	cmd := t.load(path)
 	if t.errs[path] != nil {
-		return
+		return cmd
 	}
 	t.expanded[path] = true
+	return cmd
 }
 
-func (t *Tree) load(path string) {
+func (t *Tree) load(path string) tea.Cmd {
 	if _, ok := t.children[path]; ok {
-		return
+		return nil
+	}
+	if t.contextLoader != nil {
+		return t.requestLoad(path)
 	}
 	if t.loader == nil {
 		t.children[path] = nil
-		return
+		return nil
 	}
 	nodes, err := t.loader(path)
 	if err != nil {
 		t.errs[path] = err
-		return
+		return nil
 	}
 	delete(t.errs, path)
 	t.children[path] = nodes
+	return nil
+}
+
+func (t *Tree) requestLoad(path string) tea.Cmd {
+	if path == "" || t.contextLoader == nil || t.inflight[path] != nil {
+		return nil
+	}
+	if _, ok := t.children[path]; ok {
+		return nil
+	}
+	t.loadGeneration++
+	return t.startLoad(path, t.loadGeneration)
+}
+
+func (t *Tree) startLoad(path string, generation int) tea.Cmd {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.inflight[path] = &treeLoad{generation: generation, cancel: cancel}
+	t.rebuild()
+	loader, tree := t.contextLoader, t
+	load := func() tea.Msg {
+		nodes, err := loader(ctx, path)
+		return TreeLoadedMsg{Tree: tree, Path: path, Generation: generation, Nodes: nodes, Err: err}
+	}
+	return tea.Batch(load, t.spin.Tick)
+}
+
+func (t *Tree) acceptLoaded(msg TreeLoadedMsg) tea.Cmd {
+	if msg.Tree != t {
+		return nil
+	}
+	load := t.inflight[msg.Path]
+	if load == nil || load.generation != msg.Generation {
+		return nil
+	}
+	load.cancel()
+	delete(t.inflight, msg.Path)
+	if t.expanded[msg.Path] {
+		if msg.Err != nil {
+			t.errs[msg.Path] = msg.Err
+		} else {
+			delete(t.errs, msg.Path)
+			t.children[msg.Path] = msg.Nodes
+		}
+	}
+	t.rebuild()
+	return nil
+}
+
+func (t *Tree) collapse(path string) {
+	delete(t.expanded, path)
+	t.cancelLoad(path)
+}
+
+func (t *Tree) cancelLoad(path string) {
+	if load := t.inflight[path]; load != nil {
+		load.cancel()
+		delete(t.inflight, path)
+	}
+}
+
+func (t *Tree) cancelAll() {
+	for path, load := range t.inflight {
+		load.cancel()
+		delete(t.inflight, path)
+	}
 }
 
 func (t *Tree) rebuild() {
@@ -467,6 +590,9 @@ func (t *Tree) line(i int) string {
 	left := strings.Repeat(" ", row.Depth*indentWidth) + glyph + name
 
 	badge := row.Node.Badge
+	if t.inflight[row.Node.Path] != nil {
+		badge = t.spin.View()
+	}
 	if t.errs[row.Node.Path] != nil {
 		badge = errorGlyph
 	}

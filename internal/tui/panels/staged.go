@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/horbo/stower/internal/config"
@@ -55,6 +56,7 @@ type Staged struct {
 	rows     []StagedRow
 	staging  dotfiles.Staging
 	failures map[string]string
+	blocked  map[string]string
 	items    int
 	packages int
 	cursor   int
@@ -63,10 +65,23 @@ type Staged struct {
 	height   int
 	st       styles.Styles
 	keys     stagedKeyMap
+	scanning bool
+	spin     spinner.Model
 }
 
 func NewStaged(paths config.Paths, home string, st styles.Styles) *Staged {
-	return &Staged{paths: paths, home: home, st: st, keys: defaultStagedKeyMap()}
+	return &Staged{paths: paths, home: home, st: st, keys: defaultStagedKeyMap(), spin: spinner.New(spinner.WithSpinner(spinner.MiniDot))}
+}
+
+func (p *Staged) SetScanning(scanning bool) tea.Cmd {
+	if p.scanning == scanning {
+		return nil
+	}
+	p.scanning = scanning
+	if scanning {
+		return p.spin.Tick
+	}
+	return nil
 }
 
 func (p *Staged) SetStaging(staging dotfiles.Staging) {
@@ -79,12 +94,17 @@ func (p *Staged) SetFailures(failures map[string]string) {
 	p.rebuild()
 }
 
+func (p *Staged) SetBlocked(blocked map[string]string) {
+	p.blocked = blocked
+	p.rebuild()
+}
+
 func (p *Staged) rebuild() {
 	selected := ""
 	if row, ok := p.Selected(); ok {
 		selected = row.Path + "\x00" + row.Package
 	}
-	p.rows, p.items, p.packages = stagedRows(p.staging, p.failures)
+	p.rows, p.items, p.packages = stagedRows(p.staging, p.failures, p.blocked)
 	p.cursor = 0
 	for i, row := range p.rows {
 		if row.Reason != "" {
@@ -98,7 +118,7 @@ func (p *Staged) rebuild() {
 	p.clampOffset()
 }
 
-func stagedRows(staging dotfiles.Staging, failures map[string]string) ([]StagedRow, int, int) {
+func stagedRows(staging dotfiles.Staging, failures, blocked map[string]string) ([]StagedRow, int, int) {
 	byPackage := map[string][]string{}
 	for path, pkg := range staging {
 		byPackage[pkg] = append(byPackage[pkg], path)
@@ -109,7 +129,7 @@ func stagedRows(staging dotfiles.Staging, failures map[string]string) ([]StagedR
 	}
 	sort.Strings(names)
 
-	rows := make([]StagedRow, 0, len(staging)+2*len(names))
+	rows := make([]StagedRow, 0, 2*len(staging)+2*len(names))
 	for _, pkg := range names {
 		paths := byPackage[pkg]
 		sort.Strings(paths)
@@ -119,6 +139,9 @@ func stagedRows(staging dotfiles.Staging, failures map[string]string) ([]StagedR
 		}
 		for _, path := range paths {
 			rows = append(rows, StagedRow{Package: pkg, Path: path})
+			if reason := blocked[path]; reason != "" {
+				rows = append(rows, StagedRow{Package: pkg, Path: path, Reason: reason})
+			}
 		}
 	}
 	return rows, len(staging), len(names)
@@ -146,6 +169,14 @@ func (p *Staged) SetSize(w, h int) {
 }
 
 func (p *Staged) Update(msg tea.Msg) tea.Cmd {
+	if tick, ok := msg.(spinner.TickMsg); ok {
+		if !p.scanning {
+			return nil
+		}
+		var cmd tea.Cmd
+		p.spin, cmd = p.spin.Update(tick)
+		return cmd
+	}
 	pressed, ok := msg.(tea.KeyPressMsg)
 	if !ok {
 		return nil
@@ -217,11 +248,26 @@ func (p *Staged) clampOffset() {
 }
 
 func (p *Staged) View() string {
+	height := p.height
+	prefix := ""
+	if p.scanning {
+		prefix = p.spin.View() + " Scanning…"
+		if p.height <= 1 {
+			return prefix
+		}
+		height = p.height - 1
+	}
 	if len(p.rows) == 0 {
+		if prefix != "" {
+			return prefix
+		}
 		return p.st.Dim.Render(components.Truncate("(nothing staged)", p.width))
 	}
-	end := min(len(p.rows), p.offset+max(p.height, 1))
+	end := min(len(p.rows), p.offset+max(height, 1))
 	lines := make([]string, 0, end-p.offset)
+	if prefix != "" {
+		lines = append(lines, prefix)
+	}
 	for i := p.offset; i < end; i++ {
 		lines = append(lines, p.row(i))
 	}
@@ -234,6 +280,8 @@ func (p *Staged) row(i int) string {
 	switch {
 	case row.Group:
 		text = row.Package + "/"
+	case row.Reason != "" && row.Path != "":
+		text = "    ✘ " + row.Reason
 	case row.Reason != "":
 		text = "  ✘ " + row.Reason
 	}

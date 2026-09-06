@@ -51,6 +51,28 @@ type flashExpiredMsg struct {
 	id int
 }
 
+type planRequest struct {
+	version int
+	staging dotfiles.Staging
+}
+
+type planBuiltMsg struct {
+	version int
+	plan    dotfiles.AdoptPlan
+	apply   bool
+}
+
+type homeEntryLoadedMsg struct {
+	path       string
+	generation int
+	facts      mainpanel.EntryFacts
+}
+
+type previewRequest struct {
+	path       string
+	generation int
+}
+
 type execEventMsg struct {
 	runID int
 	event dotfiles.Event
@@ -182,10 +204,26 @@ type Model struct {
 	git         gitState
 	gitDeclined bool
 
-	staging   dotfiles.Staging
-	removeGit map[string]bool
-	failures  map[string]string
-	plan      dotfiles.AdoptPlan
+	staging                 dotfiles.Staging
+	removeGit               map[string]bool
+	failures                map[string]string
+	blocked                 map[string]string
+	plan                    dotfiles.AdoptPlan
+	planVersion             int
+	planReady               bool
+	planActive              bool
+	planActiveVersion       int
+	planCancel              context.CancelFunc
+	planPending             *planRequest
+	applyPending            bool
+	buildAdoptPlan          func(context.Context, config.Paths, dotfiles.Staging) dotfiles.AdoptPlan
+	inspectHomeEntry        func(context.Context, string) mainpanel.EntryFacts
+	previewPath             string
+	previewGeneration       int
+	previewCancel           context.CancelFunc
+	previewActive           bool
+	previewActiveGeneration int
+	previewPending          *previewRequest
 
 	runner  dotfiles.Runner
 	exec    *execution
@@ -204,43 +242,47 @@ func New(paths config.Paths, stowVersion string) Model {
 	st := styles.Default()
 	home := os.Getenv("HOME")
 	m := Model{
-		paths:         paths,
-		home:          home,
-		stowVersion:   stowVersion,
-		st:            st,
-		keys:          defaultKeyMap(),
-		focus:         Packages,
-		mode:          ModeNormal,
-		mouse:         true,
-		status:        panels.NewStatus(paths, home, stowVersion, st),
-		packages:      panels.NewPackages(st),
-		homePanel:     panels.NewHome(paths, home, st),
-		staged:        panels.NewStaged(paths, home, st),
-		issues:        panels.NewIssues(st),
-		mainPkg:       mainpanel.NewPackage(paths, home, st),
-		mainHome:      mainpanel.NewHomeEntry(paths, home, st),
-		mainStaged:    mainpanel.NewStagedPlan(paths, home, st),
-		mainLog:       mainpanel.NewLog(paths, home, st),
-		mainRestore:   mainpanel.NewRestorePlan(st),
-		mainDetail:    mainpanel.NewText(),
-		mainDiff:      mainpanel.NewText(),
-		fixPopup:      popups.NewFix(st),
-		keysPopup:     popups.NewKeys(st),
-		assignPopup:   popups.NewAssign(st),
-		confirmPopup:  popups.NewConfirm(st),
-		errorPopup:    popups.NewError(st),
-		commitPopup:   popups.NewCommit(st),
-		firstRunPopup: popups.NewFirstRun(st),
-		staging:       dotfiles.Staging{},
-		removeGit:     map[string]bool{},
-		failures:      map[string]string{},
-		runner:        stow.Runner{Dotfiles: paths.Dotfiles, Target: paths.Target},
+		paths:            paths,
+		home:             home,
+		stowVersion:      stowVersion,
+		st:               st,
+		keys:             defaultKeyMap(),
+		focus:            Packages,
+		mode:             ModeNormal,
+		mouse:            true,
+		status:           panels.NewStatus(paths, home, stowVersion, st),
+		packages:         panels.NewPackages(st),
+		homePanel:        panels.NewHome(paths, home, st),
+		staged:           panels.NewStaged(paths, home, st),
+		issues:           panels.NewIssues(st),
+		mainPkg:          mainpanel.NewPackage(paths, home, st),
+		mainHome:         mainpanel.NewHomeEntry(paths, home, st),
+		mainStaged:       mainpanel.NewStagedPlan(paths, home, st),
+		mainLog:          mainpanel.NewLog(paths, home, st),
+		mainRestore:      mainpanel.NewRestorePlan(st),
+		mainDetail:       mainpanel.NewText(),
+		mainDiff:         mainpanel.NewText(),
+		fixPopup:         popups.NewFix(st),
+		keysPopup:        popups.NewKeys(st),
+		assignPopup:      popups.NewAssign(st),
+		confirmPopup:     popups.NewConfirm(st),
+		errorPopup:       popups.NewError(st),
+		commitPopup:      popups.NewCommit(st),
+		firstRunPopup:    popups.NewFirstRun(st),
+		staging:          dotfiles.Staging{},
+		removeGit:        map[string]bool{},
+		failures:         map[string]string{},
+		blocked:          map[string]string{},
+		runner:           stow.Runner{Dotfiles: paths.Dotfiles, Target: paths.Target},
+		buildAdoptPlan:   dotfiles.BuildAdoptPlanContext,
+		inspectHomeEntry: mainpanel.InspectContext,
+		planReady:        true,
 	}
 	m.side = [SidePanelCount]Panel{m.status, m.packages, m.homePanel, m.staged, m.issues}
 	m.git = inspectGit(paths)
 	m.status.SetGit(m.git.repo, len(m.git.dirty))
 	m.openFirstRun()
-	m.rebuildPlan()
+	m.refreshStagingViews()
 	return m
 }
 
@@ -276,6 +318,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.relayout()
 		return m, nil
 	case refreshedMsg:
+		if m.previewCancel != nil {
+			m.previewCancel()
+		}
+		m.previewPath = ""
+		m.previewGeneration++
+		m.previewPending = nil
 		m.pkgs = msg.pkgs
 		m.loadErr = msg.err
 		m.git = msg.git
@@ -283,11 +331,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.issues.SetIssues(msg.issues)
 		m.status.SetIssues(len(msg.issues))
 		m.status.SetGit(m.git.repo, len(m.git.dirty))
-		m.homePanel.Reload()
-		m.homePanel.SetStaging(m.staging)
-		m.rebuildPlan()
-		m.syncMain()
+		homeCmd := m.homePanel.Reload()
+		return m, tea.Batch(homeCmd, m.stagingChanged())
+	case planBuiltMsg:
+		return m.handlePlanBuilt(msg)
+	case homeEntryLoadedMsg:
+		if !m.previewActive || msg.generation != m.previewActiveGeneration {
+			return m, nil
+		}
+		m.previewActive = false
+		m.previewCancel = nil
+		if m.previewPending != nil {
+			next := *m.previewPending
+			m.previewPending = nil
+			return m, m.startPreview(next)
+		}
+		if msg.generation == m.previewGeneration && msg.path == m.previewPath {
+			m.mainHome.SetFacts(msg.path, msg.facts)
+		}
 		return m, nil
+	case components.TreeLoadedMsg:
+		cmd := m.homePanel.Update(msg)
+		return m, tea.Batch(cmd, m.syncMain())
 	case flashExpiredMsg:
 		if msg.id == m.flashID {
 			m.flash = ""
@@ -296,11 +361,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case panels.StageRequestMsg:
 		return m, m.openAssign(msg.Path)
 	case panels.UnstageRequestMsg:
-		m.unstage(msg.Path)
-		return m, nil
+		return m, m.unstage(msg.Path)
 	case panels.UnstageGroupMsg:
-		m.unstageGroup(msg.Package)
-		return m, nil
+		return m, m.unstageGroup(msg.Package)
 	case panels.RenameGroupMsg:
 		return m, m.openRename(msg.Package)
 	case popups.AssignedMsg:
@@ -376,7 +439,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.finishExecution(msg.summary)
 	case spinner.TickMsg:
-		return m, m.status.Update(msg)
+		return m, tea.Batch(m.status.Update(msg), m.staged.Update(msg), m.homePanel.Update(msg), m.mainHome.Update(msg))
 	case panels.ActivateMsg:
 		return m.activate()
 	case tea.KeyPressMsg:
@@ -440,8 +503,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	if capturer, ok := m.focusedPanel().(inputCapturer); ok && capturer.CapturesInput() {
 		cmd := m.focusedPanel().Update(msg)
-		m.syncMain()
-		return m, cmd
+		return m, tea.Batch(cmd, m.syncMain())
 	}
 
 	if !m.logOpen && !m.diffOpen && !m.restoreOpen {
@@ -500,8 +562,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.focus = nextSide(m.focus)
 		m.mainFocused = false
 		m.relayout()
-		m.syncMain()
-		return m, nil
+		return m, m.syncMain()
 	case key.Matches(msg, m.keys.Back):
 		if m.diffOpen {
 			m.diffOpen = false
@@ -513,15 +574,13 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.restoreOpen = false
 			m.mainFocused = false
 			m.relayout()
-			m.syncMain()
-			return m, nil
+			return m, m.syncMain()
 		}
 		if m.logOpen {
 			m.closeLog()
 			m.mainFocused = false
 			m.relayout()
-			m.syncMain()
-			return m, nil
+			return m, m.syncMain()
 		}
 		if m.mainFocused {
 			m.mainFocused = false
@@ -542,8 +601,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case key.Matches(msg, m.keys.Toggle):
 		if m.mainContext() == contextStagedPlan {
-			m.toggleRemoveGit(m.staged.SelectedPackage())
-			return m, nil
+			return m, m.toggleRemoveGit(m.staged.SelectedPackage())
 		}
 	}
 
@@ -553,14 +611,12 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.focus = p
 			m.mainFocused = false
 			m.relayout()
-			m.syncMain()
-			return m, nil
+			return m, m.syncMain()
 		}
 	}
 
 	cmd := m.focusedPanel().Update(msg)
-	m.syncMain()
-	return m, cmd
+	return m, tea.Batch(cmd, m.syncMain())
 }
 
 func (m Model) activate() (tea.Model, tea.Cmd) {
@@ -705,11 +761,12 @@ func (m *Model) relayout() {
 	}
 }
 
-func (m *Model) syncMain() {
+func (m *Model) syncMain() tea.Cmd {
 	m.syncPackageContext()
 	m.syncIssueContext()
-	m.syncHomeContext()
+	cmd := m.syncHomeContext()
 	m.mainStaged.SetPlan(m.plan, m.staged.SelectedPackage())
+	return cmd
 }
 
 func (m *Model) syncPackageContext() {
@@ -727,30 +784,146 @@ func (m *Model) syncPackageContext() {
 	m.mainPkg.SetPackage(selected.Name, nil, nil)
 }
 
-func (m *Model) syncHomeContext() {
+func (m *Model) syncHomeContext() tea.Cmd {
 	node, ok := m.homePanel.Selected()
 	if !ok {
+		if m.previewCancel != nil {
+			m.previewCancel()
+			m.previewCancel = nil
+		}
+		m.previewPath = ""
+		m.previewGeneration++
+		m.previewPending = nil
 		m.mainHome.SetEntry("", "", false)
-		return
+		return nil
 	}
 	pkg, staged := m.staging[node.Path]
 	m.mainHome.SetEntry(node.Path, pkg, staged)
+	if node.Path == m.previewPath {
+		return nil
+	}
+	if m.previewCancel != nil {
+		m.previewCancel()
+	}
+	m.previewPath = node.Path
+	m.previewGeneration++
+	generation, path := m.previewGeneration, node.Path
+	req := previewRequest{path: path, generation: generation}
+	if m.previewActive {
+		m.previewPending = &req
+		return m.mainHome.StartLoading()
+	}
+	return m.startPreview(req)
 }
 
-func (m *Model) rebuildPlan() {
-	m.plan = dotfiles.BuildAdoptPlan(m.paths, m.staging)
+func (m *Model) startPreview(req previewRequest) tea.Cmd {
+	ctx, cancel := context.WithCancel(context.Background())
+	m.previewCancel = cancel
+	m.previewActive = true
+	m.previewActiveGeneration = req.generation
+	inspect := m.inspectHomeEntry
+	load := func() tea.Msg {
+		return homeEntryLoadedMsg{path: req.path, generation: req.generation, facts: inspect(ctx, req.path)}
+	}
+	return tea.Batch(load, m.mainHome.StartLoading())
+}
+
+func cloneStaging(staging dotfiles.Staging) dotfiles.Staging {
+	copy := make(dotfiles.Staging, len(staging))
+	for path, pkg := range staging {
+		copy[path] = pkg
+	}
+	return copy
+}
+
+func (m *Model) applyRemoveGit() {
 	for i := range m.plan.Packages {
 		m.plan.Packages[i].RemoveNestedGit = m.removeGit[m.plan.Packages[i].Package]
 	}
+}
+
+func (m *Model) refreshStagingViews() {
 	m.status.SetStaged(len(m.staging))
 	m.staged.SetStaging(m.staging)
 	m.staged.SetFailures(m.failures)
+	m.staged.SetBlocked(m.blocked)
 	m.homePanel.SetStaging(m.staging)
 }
 
-func (m *Model) stagingChanged() {
-	m.rebuildPlan()
-	m.syncMain()
+func (m *Model) stagingChanged() tea.Cmd {
+	m.planVersion++
+	m.planReady = len(m.staging) == 0
+	m.applyPending = false
+	if m.planCancel != nil {
+		m.planCancel()
+	}
+	m.plan = dotfiles.AdoptPlan{Paths: m.paths}
+	m.blocked = map[string]string{}
+	m.mainStaged.SetScanning(len(m.staging) > 0)
+	m.refreshStagingViews()
+	sync := m.syncMain()
+	if len(m.staging) == 0 {
+		m.planPending = nil
+		if !m.planActive {
+			return tea.Batch(sync, m.staged.SetScanning(false))
+		}
+		return sync
+	}
+	req := &planRequest{version: m.planVersion, staging: cloneStaging(m.staging)}
+	if m.planActive {
+		m.planPending = req
+		return tea.Batch(sync, m.staged.SetScanning(true))
+	}
+	return tea.Batch(sync, m.staged.SetScanning(true), m.startPlan(*req, false))
+}
+
+func (m *Model) startPlan(req planRequest, apply bool) tea.Cmd {
+	ctx, cancel := context.WithCancel(context.Background())
+	m.planActive = true
+	m.planActiveVersion = req.version
+	m.planCancel = cancel
+	build, paths := m.buildAdoptPlan, m.paths
+	return func() tea.Msg {
+		return planBuiltMsg{version: req.version, plan: build(ctx, paths, req.staging), apply: apply}
+	}
+}
+
+func (m Model) handlePlanBuilt(msg planBuiltMsg) (tea.Model, tea.Cmd) {
+	if !m.planActive || msg.version != m.planActiveVersion {
+		return m, nil
+	}
+	m.planActive = false
+	m.planCancel = nil
+	if m.planPending != nil {
+		next := *m.planPending
+		m.planPending = nil
+		return m, m.startPlan(next, false)
+	}
+	if msg.version != m.planVersion {
+		if len(m.staging) == 0 {
+			return m, m.staged.SetScanning(false)
+		}
+		return m, nil
+	}
+	m.plan = msg.plan
+	m.mainStaged.SetScanning(false)
+	m.applyRemoveGit()
+	m.planReady = true
+	m.blocked = map[string]string{}
+	for _, pkg := range m.plan.Packages {
+		for _, blocked := range pkg.Blocked {
+			m.blocked[blocked.Path] = blocked.Reason
+		}
+	}
+	m.staged.SetBlocked(m.blocked)
+	sync := m.syncMain()
+	stop := m.staged.SetScanning(false)
+	if msg.apply && m.applyPending {
+		m.applyPending = false
+		updated, cmd := m.openApplyConfirmation()
+		return updated, tea.Batch(sync, stop, cmd)
+	}
+	return m, tea.Batch(sync, stop)
 }
 
 func (m *Model) setFlash(text string) tea.Cmd {
@@ -799,8 +972,7 @@ func (m *Model) applyAssignment(msg popups.AssignedMsg) tea.Cmd {
 			delete(m.removeGit, from)
 			m.removeGit[msg.Package] = true
 		}
-		m.stagingChanged()
-		return m.setFlash("renamed " + from + " to " + msg.Package)
+		return tea.Batch(m.stagingChanged(), m.setFlash("renamed "+from+" to "+msg.Package))
 	}
 	return m.stage(msg.Path, msg.Package)
 }
@@ -822,38 +994,39 @@ func (m *Model) stage(path, pkg string) tea.Cmd {
 		delete(m.staging, staged)
 	}
 	m.staging[path] = pkg
-	m.stagingChanged()
+	scan := m.stagingChanged()
 	if len(dropped) > 0 {
-		return m.setFlash(fmt.Sprintf("staged %s and dropped %s already staged below it",
-			m.display(path), plural(len(dropped), "entry", "entries")))
+		return tea.Batch(scan, m.setFlash(fmt.Sprintf("staged %s and dropped %s already staged below it",
+			m.display(path), plural(len(dropped), "entry", "entries"))))
 	}
-	return m.setFlash("staged " + m.display(path) + " into " + pkg)
+	return tea.Batch(scan, m.setFlash("staged "+m.display(path)+" into "+pkg))
 }
 
-func (m *Model) unstage(path string) {
+func (m *Model) unstage(path string) tea.Cmd {
 	if _, ok := m.staging[path]; !ok {
-		return
+		return nil
 	}
 	delete(m.staging, path)
-	m.stagingChanged()
+	return m.stagingChanged()
 }
 
-func (m *Model) unstageGroup(pkg string) {
+func (m *Model) unstageGroup(pkg string) tea.Cmd {
 	for path, staged := range m.staging {
 		if staged == pkg {
 			delete(m.staging, path)
 		}
 	}
 	delete(m.removeGit, pkg)
-	m.stagingChanged()
+	return m.stagingChanged()
 }
 
-func (m *Model) toggleRemoveGit(pkg string) {
+func (m *Model) toggleRemoveGit(pkg string) tea.Cmd {
 	if pkg == "" || !m.mainStaged.HasWarning(pkg) {
-		return
+		return nil
 	}
 	m.removeGit[pkg] = !m.removeGit[pkg]
-	m.stagingChanged()
+	m.applyRemoveGit()
+	return m.syncMain()
 }
 
 func (m Model) knownPackages() []string {

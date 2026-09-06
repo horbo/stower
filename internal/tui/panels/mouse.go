@@ -41,9 +41,21 @@ func (p *Home) Scroll(delta int) {
 }
 
 func (p *Staged) Click(x, y int) tea.Cmd {
+	if p.scanning {
+		if y == 0 {
+			return nil
+		}
+		y--
+	}
 	row, ok := components.RowAt(p.offset, y, len(p.rows))
-	if !ok || p.rows[row].Reason != "" {
+	if !ok {
 		return nil
+	}
+	if p.rows[row].Reason != "" {
+		if p.rows[row].Path == "" {
+			return nil
+		}
+		row--
 	}
 	if row == p.cursor {
 		return activate()
