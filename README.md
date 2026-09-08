@@ -137,11 +137,20 @@ Press `?` inside stower for the full key list. The most important ones:
 | `space`     | Home: stage the highlighted entry into a package    |
 | `u`         | Home, Staged: unstage                               |
 | `r`         | restore a package, or marked entries, to the target |
+| `o`         | open the highlighted entry in your editor           |
+| `O`         | open the other copy: target in Packages and Issues  |
 | `f`         | fix the highlighted issue                           |
 | `R`         | restow every package                                |
 | `c`         | commit the repository                               |
 | `ctrl+r`    | rescan                                              |
 | `q`         | quit                                                |
+
+`o` picks the editor from `$VISUAL`, then `$EDITOR`, then `vi`. The value may carry arguments
+(`EDITOR="code --wait"`) and is never run through a shell. stower releases the screen while the
+editor runs and re-scans when it exits, so a save that replaced a symlink with a regular file
+shows up in Issues right away. In Home `o` opens the target path, so a managed entry follows its
+link into the repository; in Packages and Issues `o` opens the repository copy and `O` the
+target.
 
 Mouse clicks and the wheel work in every panel and popup. Start with `--no-mouse` to keep
 the terminal's own text selection.

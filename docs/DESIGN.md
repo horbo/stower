@@ -300,9 +300,9 @@ dim, staged entries accent, ok green, replaced red, warning yellow.
 |-----|----------|----------------------------------------------------------------|-----------------------------------------------------|
 | [0] | Status   | `~/dotfiles → ~  stow 2.4.1  git 1*`, one line, fixed height    | `c commit`, `R restow all`                          |
 | [1] | Packages | state glyph, name, `*` when dirty in git                        | `enter` focus main, `r restore`, `R restow`, `c commit` |
-| [2] | Home     | target tree; dim `[zsh]` badge = managed (not selectable, not expandable), accent `→ git` = staged | `space stage`, `u unstage`, `←→ fold`, `/ filter` |
+| [2] | Home     | target tree; dim `[zsh]` badge = managed (not selectable, not expandable), accent `→ git` = staged | `space stage`, `u unstage`, `←→ fold`, `/ filter`, `o open in editor` |
 | [3] | Staged   | session staging grouped by package; `✘ reason` under a blocked path, per-package line for execution failures; empty shows `nothing staged` in the title counter | `enter apply`, `u unstage`, `e rename package`      |
-| [4] | Issues   | doctor problems only: replaced / missing / foreign / unowned / unnormalized; empty shows `no issues` in the title counter | `f fix`, `D diff`                       |
+| [4] | Issues   | doctor problems only: replaced / missing / foreign / unowned / unnormalized; empty shows `no issues` in the title counter | `f fix`, `D diff`, `o open in editor`, `O open target` |
 
 Global keys: `1-4` switch panels (`0` Status), `tab` next panel, `?` full key list, `+` / `-`
 screen modes (`_` remains an alias for `-`), `R` restow all packages (with Confirm), `ctrl+r`
@@ -328,7 +328,8 @@ The main panel content follows the focused panel and its highlighted item:
   `enter` moves focus into main so actions apply per entry (`f fix`, `space mark`,
   `r restore entries`). `space` marks the highlighted link point with `✓` and the summary line
   counts the marks; `r` opens the Restore plan for the marked entries, or for the highlighted
-  one when nothing is marked.
+  one when nothing is marked. `o` opens the repository copy of the highlighted entry in the
+  editor and `O` the target copy, so both sides of a `replaced` entry are reachable.
 - **Home: ~/path**: kind, size, directory listing or head of
   the file, `Would become: <pkg>/dot-config/ghostty/`, `Expected link: …`. File counting stops
   at `mainpanel.CountCap` (2000) and shows `2000+ files`. Preview reads and file counts run
@@ -451,6 +452,11 @@ Operation flow: Confirm → main becomes Log → Commit popup → every panel re
 - Module paths are `charm.land/{bubbletea,bubbles,lipgloss}/v2` (pinned in M0: v2.0.9,
   v2.2.1, v2.0.6). `github.com/charmbracelet/x/ansi` is already in the dependency closure and
   may be imported for `ansi.Truncate` and width measurement.
+- The editor runs through `tea.ExecProcess(*exec.Cmd, tea.ExecCallback) tea.Cmd`, the name the
+  pinned v2.0.9 gives the exec-process API; `tea.ExecCallback` is `func(error) Msg` and there is
+  no built-in finished message, so the root model defines its own. Bubble Tea wires the child's
+  stdin, stdout and stderr itself, and because v2 declares the alternate screen and the mouse
+  mode per frame in `View()`, both are re-armed by the first frame after the editor exits.
 - Text truncation and wrapping to width is done explicitly (`ansi.Truncate` from
   `charmbracelet/x/ansi` or an equivalent already pulled in by the pinned dependencies).
 - `layout.go` exposes pure functions `(W, H, focus, mode) → rectangles`, table-tested at
