@@ -132,6 +132,8 @@ type keyMap struct {
 	Enter        key.Binding
 	Panels       key.Binding
 	Repositories key.Binding
+	Open         key.Binding
+	OpenTarget   key.Binding
 	byPanel      [SidePanelCount]key.Binding
 }
 
@@ -149,6 +151,8 @@ func defaultKeyMap() keyMap {
 		Enter:        key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "focus main")),
 		Panels:       key.NewBinding(key.WithKeys("0", "1", "2", "3", "4"), key.WithHelp("0-4", "panels")),
 		Repositories: key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "Git repositories")),
+		Open:         key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open in editor")),
+		OpenTarget:   key.NewBinding(key.WithKeys("O"), key.WithHelp("O", "open target")),
 	}
 	for _, p := range sidePanels {
 		m.byPanel[p] = key.NewBinding(key.WithKeys(string(rune('0' + int(p)))))
@@ -227,6 +231,7 @@ type Model struct {
 	applyPending            bool
 	buildAdoptPlan          func(context.Context, config.Paths, dotfiles.Staging) dotfiles.AdoptPlan
 	inspectHomeEntry        func(context.Context, config.Paths, string) mainpanel.EntryFacts
+	execEditor              func(argv []string, path string) tea.Cmd
 	previewPath             string
 	previewGeneration       int
 	previewCancel           context.CancelFunc
@@ -287,6 +292,7 @@ func New(paths config.Paths, stowVersion string) Model {
 		runner:            stow.Runner{Dotfiles: paths.Dotfiles, Target: paths.Target},
 		buildAdoptPlan:    dotfiles.BuildAdoptPlanContext,
 		inspectHomeEntry:  mainpanel.InspectContext,
+		execEditor:        execEditorProcess,
 		planReady:         true,
 	}
 	m.side = [SidePanelCount]Panel{m.status, m.packages, m.homePanel, m.staged, m.issues}
@@ -370,6 +376,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.flash = ""
 		}
 		return m, nil
+	case editorFinishedMsg:
+		return m.handleEditorFinished(msg)
 	case panels.StageRequestMsg:
 		return m, m.openAssign(msg.Path)
 	case panels.UnstageRequestMsg:
@@ -555,6 +563,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "c":
 			if (m.focus == Status || m.focus == Packages) && !m.mainFocused {
 				return m, m.openCommit()
+			}
+		case "o", "O":
+			if _, ok := m.editorTargets(); ok {
+				return m, m.openInEditor(msg.String() == "O")
 			}
 		}
 	}
@@ -1306,6 +1318,12 @@ func (m Model) renderBarItem(item barItem) string {
 
 func (m Model) contextKeys() []key.Binding {
 	keys := append([]key.Binding{}, m.focusedPanel().Keys()...)
+	if targets, ok := m.editorTargets(); ok {
+		keys = append(keys, m.keys.Open)
+		if targets.repo != "" {
+			keys = append(keys, m.keys.OpenTarget)
+		}
+	}
 	if m.focus == Staged && !m.logOpen && len(m.staging) > 0 {
 		keys = append(keys, key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "apply")))
 	} else if !m.mainFocused && m.canFocusMain() {
