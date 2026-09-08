@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -68,6 +67,16 @@ type Summary struct {
 	Succeeded []string
 	Skipped   []string
 	Failed    []PackageFailure
+	Warnings  []PackageFailure
+	GitPaths  []string
+}
+
+func (s *Summary) addWarnings(pkg string, warnings []error) {
+	for _, warning := range warnings {
+		if warning != nil {
+			s.Warnings = append(s.Warnings, PackageFailure{Package: pkg, Err: warning})
+		}
+	}
 }
 
 func (s Summary) OK() bool {
@@ -86,6 +95,10 @@ func (s Summary) Err() error {
 }
 
 func Execute(ctx context.Context, plan AdoptPlan, runner Runner, events chan<- Event) Summary {
+	return ExecuteWithGit(ctx, plan, runner, repositoryGit{}, events)
+}
+
+func ExecuteWithGit(ctx context.Context, plan AdoptPlan, runner Runner, git GitOperations, events chan<- Event) Summary {
 	em := emitter{events: events}
 	var summary Summary
 	if plan.Fatal != nil {
@@ -100,10 +113,25 @@ func Execute(ctx context.Context, plan AdoptPlan, runner Runner, events chan<- E
 			summary.Skipped = append(summary.Skipped, pkg.Package)
 			continue
 		}
-		if err := adoptPackage(ctx, pkg, runner, em); err != nil {
+		var err error
+		var warnings []error
+		if hasConversions(pkg) {
+			err = git.Check(ctx, plan.Paths.Dotfiles)
+			if err == nil {
+				err = repositoryPlanError(ctx, plan.Paths, pkg)
+			}
+		}
+		if err == nil {
+			warnings, err = adoptPackage(ctx, pkg, plan.Paths.Dotfiles, runner, git, em)
+		}
+		summary.addWarnings(pkg.Package, warnings)
+		if err != nil {
 			summary.Failed = append(summary.Failed, PackageFailure{Package: pkg.Package, Err: err})
 			em.send(Event{Kind: PackageFailed, Package: pkg.Package, Err: err})
 			continue
+		}
+		if hasConversions(pkg) {
+			summary.GitPaths = []string{".gitmodules"}
 		}
 		summary.Succeeded = append(summary.Succeeded, pkg.Package)
 		em.send(Event{Kind: PackageDone, Package: pkg.Package})
@@ -112,6 +140,10 @@ func Execute(ctx context.Context, plan AdoptPlan, runner Runner, events chan<- E
 }
 
 func ExecuteRestore(ctx context.Context, plan RestorePlan, runner Runner, events chan<- Event) Summary {
+	return ExecuteRestoreWithGit(ctx, plan, runner, repositoryGit{}, events)
+}
+
+func ExecuteRestoreWithGit(ctx context.Context, plan RestorePlan, runner Runner, git GitOperations, events chan<- Event) Summary {
 	em := emitter{events: events}
 	var summary Summary
 	switch {
@@ -125,10 +157,15 @@ func ExecuteRestore(ctx context.Context, plan RestorePlan, runner Runner, events
 		em.send(Event{Kind: PackageFailed, Package: plan.Package, Err: err})
 		return summary
 	}
-	if err := restorePackage(ctx, plan, runner, em); err != nil {
+	warnings, err := restorePackage(ctx, plan, runner, git, em)
+	summary.addWarnings(plan.Package, warnings)
+	if err != nil {
 		summary.Failed = append(summary.Failed, PackageFailure{Package: plan.Package, Err: err})
 		em.send(Event{Kind: PackageFailed, Package: plan.Package, Err: err})
 		return summary
+	}
+	if len(plan.Submodules) > 0 {
+		summary.GitPaths = []string{".gitmodules"}
 	}
 	summary.Succeeded = append(summary.Succeeded, plan.Package)
 	em.send(Event{Kind: PackageDone, Package: plan.Package})
@@ -153,23 +190,44 @@ func (e emitter) result(pkg string, result stow.Result) {
 	}
 }
 
-type journal struct {
-	moves []Move
-	dirs  []string
+type removedDirectory struct {
+	path string
+	mode os.FileMode
 }
 
-func adoptPackage(ctx context.Context, plan PackageAdopt, runner Runner, em emitter) error {
+type journal struct {
+	moves       []Move
+	dirs        []string
+	removedDirs []removedDirectory
+}
+
+func adoptPackage(ctx context.Context, plan PackageAdopt, dir string, runner Runner, git GitOperations, em emitter) ([]error, error) {
 	pkg := plan.Package
 	var undo journal
 	stowed := false
+	var transaction GitTransaction
+	if hasConversions(plan) {
+		var err error
+		transaction, err = git.Begin(dir)
+		if err != nil {
+			em.send(Event{Kind: StepFailed, Package: pkg, Message: "begin the Git transaction", Err: err})
+			return nil, err
+		}
+	}
 
-	fail := func(step string, err error) error {
+	fail := func(step string, err error) ([]error, error) {
 		em.send(Event{Kind: StepFailed, Package: pkg, Message: step, Err: err})
 		if stowed {
 			rollbackStow(pkg, runner, em)
 		}
+		if transaction != nil {
+			if rollbackErr := transaction.Rollback(); rollbackErr != nil {
+				em.send(Event{Kind: Rollback, Package: pkg, Err: rollbackErr})
+				err = errors.Join(err, rollbackErr)
+			}
+		}
 		rollbackMoves(&undo, pkg, em)
-		return err
+		return nil, err
 	}
 
 	step := "create package directories"
@@ -202,6 +260,24 @@ func adoptPackage(ctx context.Context, plan PackageAdopt, runner Runner, em emit
 		em.send(Event{Kind: StepDone, Package: pkg, Message: step})
 	}
 
+	for _, repository := range plan.Repositories {
+		if repository.Choice.Action != ConvertRepository {
+			continue
+		}
+		step = "convert " + repository.Source + " to submodule"
+		em.send(Event{Kind: StepStarted, Package: pkg, Message: step})
+		if err := ctx.Err(); err != nil {
+			return fail(step, err)
+		}
+		rel, err := filepath.Rel(dir, repository.Destination)
+		if err != nil {
+			return fail(step, err)
+		}
+		if err = transaction.Register(ctx, rel, repository.Choice.URL, repository.Info.Head); err != nil {
+			return fail(step, err)
+		}
+		em.send(Event{Kind: StepDone, Package: pkg, Message: step})
+	}
 	step = "stow dry run"
 	em.send(Event{Kind: StepStarted, Package: pkg, Message: step})
 	if err := ctx.Err(); err != nil {
@@ -231,42 +307,76 @@ func adoptPackage(ctx context.Context, plan PackageAdopt, runner Runner, em emit
 		return fail(step, err)
 	}
 
-	if plan.RemoveNestedGit {
-		step = "remove nested .git directories"
-		em.send(Event{Kind: StepStarted, Package: pkg, Message: step})
-		for _, move := range plan.Moves {
-			if err := removeNestedGit(move.To, pkg, em); err != nil {
-				em.send(Event{Kind: StepFailed, Package: pkg, Message: step, Err: err})
-				return nil
-			}
-		}
-		em.send(Event{Kind: StepDone, Package: pkg, Message: step})
+	var warnings []error
+	if err := closeGitTransaction(transaction, pkg, em); err != nil {
+		warnings = append(warnings, err)
 	}
-	return nil
+	if err := removeSelectedGit(plan, em); err != nil {
+		em.send(Event{Kind: StepFailed, Package: pkg, Message: "remove selected .git directories", Err: err})
+		warnings = append(warnings, err)
+	}
+	return warnings, nil
 }
 
-func restorePackage(ctx context.Context, plan RestorePlan, runner Runner, em emitter) error {
+func restorePackage(ctx context.Context, plan RestorePlan, runner Runner, git GitOperations, em emitter) ([]error, error) {
 	pkg := plan.Package
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
 
+	var transaction GitTransaction
+	if len(plan.Submodules) > 0 {
+		if err := git.Check(ctx, plan.Paths.Dotfiles); err != nil {
+			return nil, err
+		}
+		var err error
+		transaction, err = git.Begin(plan.Paths.Dotfiles)
+		if err != nil {
+			em.send(Event{Kind: StepFailed, Package: pkg, Message: "begin the Git transaction", Err: err})
+			return nil, err
+		}
+	}
+	var warnings []error
+	closeTransaction := func() {
+		if err := closeGitTransaction(transaction, pkg, em); err != nil {
+			warnings = append(warnings, err)
+		}
+	}
 	step := "stow unstow"
 	em.send(Event{Kind: StepStarted, Package: pkg, Message: step})
 	unstow := runner.Unstow(pkg)
 	em.result(pkg, unstow)
 	if unstow.Err != nil {
 		em.send(Event{Kind: StepFailed, Package: pkg, Message: step, Err: unstow.Err})
-		return unstow.Err
+		closeTransaction()
+		return warnings, unstow.Err
 	}
 	em.send(Event{Kind: StepDone, Package: pkg, Message: step})
 
 	var undo journal
-	fail := func(step string, err error) error {
+	fail := func(step string, err error) ([]error, error) {
 		em.send(Event{Kind: StepFailed, Package: pkg, Message: step, Err: err})
 		rollbackMoves(&undo, pkg, em)
+		if transaction != nil {
+			if rollbackErr := transaction.Rollback(); rollbackErr != nil {
+				em.send(Event{Kind: Rollback, Package: pkg, Err: rollbackErr})
+				err = errors.Join(err, rollbackErr)
+			}
+		}
 		rollbackRestow(pkg, runner, em)
-		return err
+		return warnings, err
+	}
+
+	for _, module := range plan.Submodules {
+		step = "restore standalone repository " + module.Path
+		em.send(Event{Kind: StepStarted, Package: pkg, Message: step})
+		if err := ctx.Err(); err != nil {
+			return fail(step, err)
+		}
+		if err := transaction.Detach(ctx, module); err != nil {
+			return fail(step, err)
+		}
+		em.send(Event{Kind: StepDone, Package: pkg, Message: step})
 	}
 
 	for _, move := range plan.Moves {
@@ -275,8 +385,19 @@ func restorePackage(ctx context.Context, plan RestorePlan, runner Runner, em emi
 		if err := ctx.Err(); err != nil {
 			return fail(step, err)
 		}
-		if _, err := os.Lstat(move.To); err == nil {
-			return fail(step, fmt.Errorf("%w: %s", ErrDestinationExists, move.To))
+		if info, err := os.Lstat(move.To); err == nil {
+			submodule := false
+			for _, entry := range plan.Entries {
+				if entry.Submodule && entry.TargetPath(plan.Paths) == move.To {
+					submodule = true
+				}
+			}
+			if !submodule || !info.IsDir() {
+				return fail(step, fmt.Errorf("%w: %s", ErrDestinationExists, move.To))
+			}
+			if err := removeRestoreDirectories(move.To, &undo); err != nil {
+				return fail(step, err)
+			}
 		}
 		created, err := mkdirAllTracked(filepath.Dir(move.To))
 		undo.dirs = append(undo.dirs, created...)
@@ -303,7 +424,8 @@ func restorePackage(ctx context.Context, plan RestorePlan, runner Runner, em emi
 			return fail(step, result.Err)
 		}
 		em.send(Event{Kind: StepDone, Package: pkg, Message: step})
-		return nil
+		closeTransaction()
+		return warnings, nil
 	}
 
 	step = "remove " + plan.RemoveDir
@@ -317,7 +439,8 @@ func restorePackage(ctx context.Context, plan RestorePlan, runner Runner, em emi
 		})
 	}
 	em.send(Event{Kind: StepDone, Package: pkg, Message: step})
-	return nil
+	closeTransaction()
+	return warnings, nil
 }
 
 func rollbackMoves(undo *journal, pkg string, em emitter) {
@@ -336,6 +459,12 @@ func rollbackMoves(undo *journal, pkg string, em emitter) {
 		}
 	}
 	undo.dirs = nil
+	for i := len(undo.removedDirs) - 1; i >= 0; i-- {
+		if err := os.MkdirAll(undo.removedDirs[i].path, undo.removedDirs[i].mode); err != nil {
+			em.send(Event{Kind: Rollback, Package: pkg, Err: err})
+		}
+	}
+	undo.removedDirs = nil
 }
 
 func rollbackStow(pkg string, runner Runner, em emitter) {
@@ -384,18 +513,37 @@ func removeEmptyTree(root string) {
 	_ = os.Remove(root)
 }
 
-func removeNestedGit(root, pkg string, em emitter) error {
-	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
+func removeRestoreDirectories(path string, undo *journal) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	children, err := os.ReadDir(path)
+	if err != nil {
+		return err
+	}
+	for _, child := range children {
+		if !child.IsDir() {
+			return fmt.Errorf("restore destination is not empty: %s", path)
+		}
+		if err := removeRestoreDirectories(filepath.Join(path, child.Name()), undo); err != nil {
 			return err
 		}
-		if !entry.IsDir() || entry.Name() != ".git" {
-			return nil
-		}
-		if err := os.RemoveAll(path); err != nil {
-			return err
-		}
-		em.send(Event{Kind: OutputLine, Package: pkg, Message: "rm -r " + path})
-		return filepath.SkipDir
-	})
+	}
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	undo.removedDirs = append(undo.removedDirs, removedDirectory{path, info.Mode()})
+	return nil
+}
+
+func closeGitTransaction(transaction GitTransaction, pkg string, em emitter) error {
+	if transaction == nil {
+		return nil
+	}
+	err := transaction.Close()
+	if err != nil {
+		em.send(Event{Kind: OutputLine, Package: pkg, Message: err.Error()})
+	}
+	return err
 }

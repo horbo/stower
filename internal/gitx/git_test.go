@@ -253,3 +253,17 @@ func TestStatusPath(t *testing.T) {
 		}
 	}
 }
+
+func TestCommitRejectsUnrelatedStagedChanges(t *testing.T) {
+	dir := newRepo(t)
+	writePackage(t, dir, "one", "file")
+	writePackage(t, dir, "two", "file")
+	gitOutput(t, dir, "add", "two")
+	before := gitOutput(t, dir, "ls-files", "--stage")
+	if err := AddAndCommit(dir, []string{"one"}, "test"); err == nil || !strings.Contains(err.Error(), "outside the commit preview") {
+		t.Fatalf("expected scope error: %v", err)
+	}
+	if after := gitOutput(t, dir, "ls-files", "--stage"); after != before {
+		t.Fatalf("index changed: %s", after)
+	}
+}

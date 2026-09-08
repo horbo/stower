@@ -215,6 +215,8 @@ func (m Model) popupPanel() any {
 		return m.fixPopup
 	case popupCommit:
 		return m.commitPopup
+	case popupRepositories:
+		return m.repositoriesPopup
 	case popupFirstRun:
 		return m.firstRunPopup
 	}

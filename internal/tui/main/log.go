@@ -123,6 +123,9 @@ func (l *Log) Finish(summary dotfiles.Summary, cancelled bool) {
 	for _, failure := range summary.Failed {
 		l.push(logFail, "✘ "+failure.Package+" failed"+reason(failure.Err))
 	}
+	for _, warning := range summary.Warnings {
+		l.push(logWarn, "⚠ "+warning.Package+": "+warning.Err.Error())
+	}
 	if len(summary.Succeeded) == 0 && len(summary.Skipped) == 0 && len(summary.Failed) == 0 {
 		l.push(logPlain, "nothing to do")
 	}

@@ -20,7 +20,7 @@ func (m Model) apply() (tea.Model, tea.Cmd) {
 		return m, m.setFlash("Scan in progress")
 	}
 	m.applyPending = true
-	req := planRequest{version: m.planVersion, staging: cloneStaging(m.staging)}
+	req := planRequest{version: m.planVersion, staging: cloneStaging(m.staging), choices: cloneChoices(m.repositoryChoices)}
 	return m, tea.Batch(m.staged.SetScanning(true), m.startPlan(req, true))
 }
 
@@ -31,6 +31,16 @@ func (m Model) openApplyConfirmation() (tea.Model, tea.Cmd) {
 	}
 	if !m.plan.Runnable() {
 		return m, m.setFlash("nothing to apply; blocked entries remain staged")
+	}
+	for _, pkg := range m.plan.Packages {
+		for _, repository := range pkg.Repositories {
+			if repository.Choice.Action == dotfiles.ConvertRepository {
+				if err := repository.ConversionError(); err != nil {
+					m.showError("Cannot convert repository", err)
+					return m, nil
+				}
+			}
+		}
 	}
 	packages := 0
 	for _, pkg := range m.plan.Packages {
@@ -114,7 +124,6 @@ func (m Model) finishExecution(summary dotfiles.Summary) (tea.Model, tea.Cmd) {
 			for _, move := range pkg.Moves {
 				delete(m.staging, move.From)
 			}
-			delete(m.removeGit, pkg.Package)
 		}
 	}
 	if len(run.plan.Packages) > 0 {
@@ -126,7 +135,7 @@ func (m Model) finishExecution(summary dotfiles.Summary) (tea.Model, tea.Cmd) {
 	m.exec = nil
 	m.status.SetRunning(false)
 	scan := m.stagingChanged()
-	if commit := m.offerCommit(run.title, summary.Succeeded); commit != nil {
+	if commit := m.offerCommitPaths(run.title, summary.Succeeded, summary.GitPaths); commit != nil {
 		return m, tea.Batch(scan, refreshCmd(m.paths), commit)
 	}
 	return m, tea.Batch(scan, refreshCmd(m.paths))

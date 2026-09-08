@@ -46,6 +46,9 @@ func BenchmarkBuildAdoptPlanDeep(b *testing.B) {
 	benchMkdir(b, dotfiles)
 	deep := filepath.Join(target, "deep")
 	buildBenchDeepChainTree(b, deep, 6, 8)
+	nested := filepath.Join(deep, "sub-00", "nested")
+	benchMkdir(b, filepath.Join(nested, ".git"))
+	benchWrite(b, filepath.Join(nested, "file"))
 	paths := config.Paths{Target: target, Dotfiles: dotfiles}
 	staging := Staging{deep: "deep"}
 

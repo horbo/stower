@@ -92,11 +92,11 @@ func TestBuildAdoptPlanBlocksAndWarns(t *testing.T) {
 		t.Errorf(".hidden blocked = %d, want 1", len(got.Blocked))
 	}
 	repo := byName["repo"]
-	if len(repo.Moves) != 1 || len(repo.Warnings) != 1 {
-		t.Fatalf("repo moves = %d, warnings = %d, want 1 and 1", len(repo.Moves), len(repo.Warnings))
+	if len(repo.Moves) != 1 {
+		t.Fatalf("repo moves = %d, want 1", len(repo.Moves))
 	}
-	if repo.RemoveNestedGit {
-		t.Error("RemoveNestedGit is on by default, want it off")
+	if len(repo.Repositories) != 1 || repo.Repositories[0].Choice.Action != KeepRepository {
+		t.Error("expected one repository with Keep selected")
 	}
 	if plan.BlockedCount() != 3 {
 		t.Errorf("BlockedCount = %d, want 3", plan.BlockedCount())

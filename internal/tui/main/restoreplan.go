@@ -72,6 +72,9 @@ func (p *RestorePlan) render() {
 		}
 		lines = append(lines, fmt.Sprintf("%s%s/%s → %s  %s %s", prefix, p.plan.Package, entry.PkgRel, entry.TargetPath(p.plan.Paths), stateGlyph(entry.State), entry.State))
 	}
+	for _, module := range p.plan.Submodules {
+		lines = append(lines, "Restore standalone repository: "+module.Path)
+	}
 	if p.plan.Partial() {
 		staying := len(p.plan.Entries) - len(p.plan.Selected)
 		lines = append(lines, "",

@@ -119,41 +119,6 @@ func TestDedupeStaging(t *testing.T) {
 	}
 }
 
-func TestHasNestedGit(t *testing.T) {
-	paths := newPaths(t)
-	withGit := filepath.Join(paths.Target, "withgit")
-	mkdir(t, filepath.Join(withGit, "sub", ".git"))
-	deep := filepath.Join(paths.Target, "deep")
-	mkdir(t, filepath.Join(deep, ".git"))
-	clean := filepath.Join(paths.Target, "clean")
-	writeFile(t, filepath.Join(clean, "file"), "x")
-	file := filepath.Join(paths.Target, "file")
-	writeFile(t, file, "x")
-
-	tests := []struct {
-		name string
-		path string
-		want bool
-	}{
-		{name: "nested git below a subdirectory", path: withGit, want: true},
-		{name: "git directly inside", path: deep, want: true},
-		{name: "no git", path: clean},
-		{name: "regular file", path: file},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			got, err := HasNestedGit(test.path)
-			if err != nil {
-				t.Fatalf("HasNestedGit(%q): %v", test.path, err)
-			}
-			if got != test.want {
-				t.Errorf("HasNestedGit(%q) = %v, want %v", test.path, got, test.want)
-			}
-		})
-	}
-}
-
 func TestCheckSameDeviceOnOneFilesystem(t *testing.T) {
 	paths := newPaths(t)
 	if err := CheckSameDevice(paths); err != nil {

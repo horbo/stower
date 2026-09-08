@@ -329,7 +329,7 @@ func (p *Staged) Keys() []key.Binding {
 	return []key.Binding{
 		p.keys.Unstage,
 		p.keys.Rename,
-		key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "toggle .git removal")),
+		key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "Git repositories")),
 		key.NewBinding(key.WithKeys("j", "k"), key.WithHelp("j/k", "move")),
 	}
 }

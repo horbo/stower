@@ -86,17 +86,9 @@ func (s *StagedPlan) Counter() string {
 func (s *StagedPlan) Keys() []key.Binding {
 	return []key.Binding{
 		key.NewBinding(key.WithKeys("j", "k"), key.WithHelp("j/k", "scroll")),
+		key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "Git repositories")),
 		key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
 	}
-}
-
-func (s *StagedPlan) HasWarning(pkg string) bool {
-	for _, adopt := range s.plan.Packages {
-		if adopt.Package == pkg {
-			return len(adopt.Warnings) > 0
-		}
-	}
-	return false
 }
 
 func (s *StagedPlan) render() {
@@ -149,11 +141,17 @@ func (s *StagedPlan) packageLines(adopt dotfiles.PackageAdopt) []string {
 	if len(adopt.Moves) > 0 {
 		lines = append(lines, s.st.Dim.Render(components.Truncate("  $ "+s.stowCommand(adopt.Package), s.width)))
 	}
-	for _, warning := range adopt.Warnings {
-		lines = append(lines, s.st.Warn.Render(components.Truncate(
-			"  ⚠ "+components.DisplayPath(warning.Path, s.home), s.width)))
-		lines = append(lines, s.st.Warn.Render(components.Truncate("    "+warning.Message, s.width)))
-		lines = append(lines, s.toggleLine(adopt))
+	for _, r := range adopt.Repositories {
+		lines = append(lines, components.Truncate("  "+r.Choice.Action.String()+": "+components.DisplayPath(r.Source, s.home), s.width))
+		if r.Choice.Action == dotfiles.ConvertRepository {
+			lines = append(lines, components.Truncate("    "+r.Choice.URL+" @ "+r.Info.Head, s.width))
+			if err := r.ConversionError(); err != nil {
+				lines = append(lines, s.st.Error.Render(components.Truncate("    "+err.Error(), s.width)))
+			}
+			if r.Info.Dirty {
+				lines = append(lines, components.Truncate("    Local changes stay in the submodule; dotfiles records HEAD only.", s.width))
+			}
+		}
 	}
 	for _, blocked := range adopt.Blocked {
 		lines = append(lines, s.st.Error.Render(components.Truncate(
@@ -161,18 +159,6 @@ func (s *StagedPlan) packageLines(adopt dotfiles.PackageAdopt) []string {
 		lines = append(lines, s.st.Error.Render(components.Truncate("    "+s.short(blocked.Reason), s.width)))
 	}
 	return lines
-}
-
-func (s *StagedPlan) toggleLine(adopt dotfiles.PackageAdopt) string {
-	box := "[ ]"
-	if adopt.RemoveNestedGit {
-		box = "[x]"
-	}
-	line := components.Truncate("    "+box+" remove .git after move", s.width)
-	if adopt.Package == s.highlight {
-		return s.st.Accent.Render(line)
-	}
-	return s.st.Dim.Render(line)
 }
 
 func (s *StagedPlan) stowCommand(pkg string) string {

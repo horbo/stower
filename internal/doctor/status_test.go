@@ -694,3 +694,142 @@ func TestRelinkRollbackWithUnownedSibling(t *testing.T) {
 		}
 	}
 }
+
+func doctorGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	full := append([]string{"-C", dir, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+		"-c", "commit.gpgsign=false", "-c", "protocol.file.allow=always"}, args...)
+	out, err := exec.Command("git", full...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return string(out)
+}
+
+func submoduleFixture(t *testing.T) (config.Paths, stow.Runner, string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(t.TempDir(), "absent"))
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	paths, runner := fixture(t)
+	doctorGit(t, paths.Dotfiles, "init")
+
+	upstream := filepath.Join(t.TempDir(), "upstream")
+	if err := os.MkdirAll(upstream, 0755); err != nil {
+		t.Fatal(err)
+	}
+	doctorGit(t, upstream, "init")
+	put(t, filepath.Join(upstream, "file"), "x\n")
+	doctorGit(t, upstream, "add", ".")
+	doctorGit(t, upstream, "commit", "-m", "initial")
+
+	rel := filepath.Join("tool", "dot-config", "sub")
+	doctorGit(t, paths.Dotfiles, "submodule", "add", "--name", filepath.ToSlash(rel), "--", upstream, filepath.ToSlash(rel))
+	put(t, filepath.Join(paths.Dotfiles, "extra", "dot-config", "extra"), "e\n")
+	doctorGit(t, paths.Dotfiles, "add", "extra")
+	doctorGit(t, paths.Dotfiles, "commit", "-m", "adopt")
+	if result := runner.Restow("tool", "extra"); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	return paths, runner, filepath.Join(paths.Target, ".config", "sub")
+}
+
+func submoduleIssue(t *testing.T, paths config.Paths) Issue {
+	t.Helper()
+	report := InspectPackage(paths, "tool")
+	if report.Err != nil {
+		t.Fatal(report.Err)
+	}
+	for _, item := range report.Entries {
+		if item.Entry.Submodule {
+			return item
+		}
+	}
+	t.Fatalf("no submodule entry in %+v", report)
+	return Issue{}
+}
+
+func TestSubmoduleIssueStates(t *testing.T) {
+	t.Run("linked", func(t *testing.T) {
+		paths, _, _ := submoduleFixture(t)
+		issue := submoduleIssue(t, paths)
+		if issue.State != OK || issue.Fixable {
+			t.Fatalf("issue: %+v", issue)
+		}
+		for _, item := range InspectPackage(paths, "tool").Entries {
+			if item.State == Unnormalized {
+				t.Fatalf(".git inside the package was reported: %+v", item)
+			}
+		}
+	})
+	t.Run("missing", func(t *testing.T) {
+		paths, _, target := submoduleFixture(t)
+		if err := os.Remove(target); err != nil {
+			t.Fatal(err)
+		}
+		issue := submoduleIssue(t, paths)
+		if issue.State != Missing || issue.Fixable {
+			t.Fatalf("issue: %+v", issue)
+		}
+	})
+	t.Run("replaced", func(t *testing.T) {
+		paths, _, target := submoduleFixture(t)
+		if err := os.Remove(target); err != nil {
+			t.Fatal(err)
+		}
+		put(t, filepath.Join(target, "file"), "other\n")
+		issue := submoduleIssue(t, paths)
+		if issue.State != Replaced || issue.Fixable {
+			t.Fatalf("issue: %+v", issue)
+		}
+	})
+	t.Run("replaced by a file", func(t *testing.T) {
+		paths, _, target := submoduleFixture(t)
+		if err := os.Remove(target); err != nil {
+			t.Fatal(err)
+		}
+		put(t, target, "plain\n")
+		issue := submoduleIssue(t, paths)
+		if issue.State != Replaced || issue.Fixable {
+			t.Fatalf("issue: %+v", issue)
+		}
+	})
+}
+
+func TestPhantomGitlinkIsReported(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(t.TempDir(), "absent"))
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	paths, runner := fixture(t)
+	doctorGit(t, paths.Dotfiles, "init")
+	put(t, filepath.Join(paths.Dotfiles, "tool", "dot-config", "keep", "file"), "x\n")
+	put(t, filepath.Join(paths.Dotfiles, "other", "dot-other"), "y\n")
+	put(t, filepath.Join(paths.Dotfiles, "extra", "dot-config", "extra"), "e\n")
+	doctorGit(t, paths.Dotfiles, "add", ".")
+	doctorGit(t, paths.Dotfiles, "commit", "-m", "initial")
+	if result := runner.Restow("tool", "other", "extra"); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	sha := strings.TrimSpace(doctorGit(t, paths.Dotfiles, "rev-parse", "HEAD"))
+	doctorGit(t, paths.Dotfiles, "update-index", "--add", "--cacheinfo",
+		"160000,"+sha+",tool/dot-config/nested")
+
+	issue := issueFor(t, paths, "tool", Invisible)
+	if issue.Fixable {
+		t.Fatal("the phantom Git link was reported as fixable")
+	}
+	if !strings.Contains(issue.Detail, "tool/dot-config/nested") ||
+		!strings.Contains(issue.Detail, "invisible to Git") {
+		t.Fatalf("detail: %q", issue.Detail)
+	}
+	report := InspectPackage(paths, "other")
+	for _, item := range report.Entries {
+		if item.State == Invisible {
+			t.Fatalf("an unrelated package was flagged: %+v", item)
+		}
+	}
+}

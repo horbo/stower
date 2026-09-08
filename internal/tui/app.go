@@ -54,6 +54,7 @@ type flashExpiredMsg struct {
 type planRequest struct {
 	version int
 	staging dotfiles.Staging
+	choices map[string]dotfiles.RepositoryChoice
 }
 
 type planBuiltMsg struct {
@@ -103,6 +104,7 @@ const (
 	popupFix
 	popupCommit
 	popupFirstRun
+	popupRepositories
 )
 
 type mainContext int
@@ -118,35 +120,35 @@ const (
 )
 
 type keyMap struct {
-	Quit      key.Binding
-	ForceQuit key.Binding
-	Help      key.Binding
-	NextPanel key.Binding
-	ModeNext  key.Binding
-	ModePrev  key.Binding
-	Refresh   key.Binding
-	RestowAll key.Binding
-	Back      key.Binding
-	Enter     key.Binding
-	Panels    key.Binding
-	Toggle    key.Binding
-	byPanel   [SidePanelCount]key.Binding
+	Quit         key.Binding
+	ForceQuit    key.Binding
+	Help         key.Binding
+	NextPanel    key.Binding
+	ModeNext     key.Binding
+	ModePrev     key.Binding
+	Refresh      key.Binding
+	RestowAll    key.Binding
+	Back         key.Binding
+	Enter        key.Binding
+	Panels       key.Binding
+	Repositories key.Binding
+	byPanel      [SidePanelCount]key.Binding
 }
 
 func defaultKeyMap() keyMap {
 	m := keyMap{
-		Quit:      key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
-		ForceQuit: key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
-		Help:      key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "keys")),
-		NextPanel: key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next panel")),
-		ModeNext:  key.NewBinding(key.WithKeys("+"), key.WithHelp("+/-", "wider/narrower")),
-		ModePrev:  key.NewBinding(key.WithKeys("_", "-"), key.WithHelp("_", "narrower")),
-		Refresh:   key.NewBinding(key.WithKeys("ctrl+r"), key.WithHelp("ctrl+r", "rescan")),
-		RestowAll: key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "restow all")),
-		Back:      key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
-		Enter:     key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "focus main")),
-		Panels:    key.NewBinding(key.WithKeys("0", "1", "2", "3", "4"), key.WithHelp("0-4", "panels")),
-		Toggle:    key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "toggle .git removal")),
+		Quit:         key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
+		ForceQuit:    key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
+		Help:         key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "keys")),
+		NextPanel:    key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next panel")),
+		ModeNext:     key.NewBinding(key.WithKeys("+"), key.WithHelp("+/-", "wider/narrower")),
+		ModePrev:     key.NewBinding(key.WithKeys("_", "-"), key.WithHelp("_", "narrower")),
+		Refresh:      key.NewBinding(key.WithKeys("ctrl+r"), key.WithHelp("ctrl+r", "rescan")),
+		RestowAll:    key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "restow all")),
+		Back:         key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
+		Enter:        key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "focus main")),
+		Panels:       key.NewBinding(key.WithKeys("0", "1", "2", "3", "4"), key.WithHelp("0-4", "panels")),
+		Repositories: key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "Git repositories")),
 	}
 	for _, p := range sidePanels {
 		m.byPanel[p] = key.NewBinding(key.WithKeys(string(rune('0' + int(p)))))
@@ -198,20 +200,21 @@ type Model struct {
 	fixAction      doctor.Action
 	restowPackages []string
 
-	keysPopup     *popups.Keys
-	assignPopup   *popups.Assign
-	confirmPopup  *popups.Confirm
-	errorPopup    *popups.Error
-	fixPopup      *popups.Fix
-	commitPopup   *popups.Commit
-	firstRunPopup *popups.FirstRun
-	popup         popupKind
+	keysPopup         *popups.Keys
+	assignPopup       *popups.Assign
+	confirmPopup      *popups.Confirm
+	errorPopup        *popups.Error
+	fixPopup          *popups.Fix
+	commitPopup       *popups.Commit
+	firstRunPopup     *popups.FirstRun
+	repositoriesPopup *popups.Repositories
+	popup             popupKind
 
 	git         gitState
 	gitDeclined bool
 
 	staging                 dotfiles.Staging
-	removeGit               map[string]bool
+	repositoryChoices       map[string]dotfiles.RepositoryChoice
 	failures                map[string]string
 	blocked                 map[string]string
 	plan                    dotfiles.AdoptPlan
@@ -249,41 +252,42 @@ func New(paths config.Paths, stowVersion string) Model {
 	st := styles.Default()
 	home := os.Getenv("HOME")
 	m := Model{
-		paths:            paths,
-		home:             home,
-		stowVersion:      stowVersion,
-		st:               st,
-		keys:             defaultKeyMap(),
-		focus:            Packages,
-		mode:             ModeNormal,
-		mouse:            true,
-		status:           panels.NewStatus(paths, home, stowVersion, st),
-		packages:         panels.NewPackages(st),
-		homePanel:        panels.NewHome(paths, home, st),
-		staged:           panels.NewStaged(paths, home, st),
-		issues:           panels.NewIssues(st),
-		mainPkg:          mainpanel.NewPackage(paths, home, st),
-		mainHome:         mainpanel.NewHomeEntry(paths, home, st),
-		mainStaged:       mainpanel.NewStagedPlan(paths, home, st),
-		mainLog:          mainpanel.NewLog(paths, home, st),
-		mainRestore:      mainpanel.NewRestorePlan(st),
-		mainDetail:       mainpanel.NewText(),
-		mainDiff:         mainpanel.NewText(),
-		fixPopup:         popups.NewFix(st),
-		keysPopup:        popups.NewKeys(st),
-		assignPopup:      popups.NewAssign(st),
-		confirmPopup:     popups.NewConfirm(st),
-		errorPopup:       popups.NewError(st),
-		commitPopup:      popups.NewCommit(st),
-		firstRunPopup:    popups.NewFirstRun(st),
-		staging:          dotfiles.Staging{},
-		removeGit:        map[string]bool{},
-		failures:         map[string]string{},
-		blocked:          map[string]string{},
-		runner:           stow.Runner{Dotfiles: paths.Dotfiles, Target: paths.Target},
-		buildAdoptPlan:   dotfiles.BuildAdoptPlanContext,
-		inspectHomeEntry: mainpanel.InspectContext,
-		planReady:        true,
+		paths:             paths,
+		home:              home,
+		stowVersion:       stowVersion,
+		st:                st,
+		keys:              defaultKeyMap(),
+		focus:             Packages,
+		mode:              ModeNormal,
+		mouse:             true,
+		status:            panels.NewStatus(paths, home, stowVersion, st),
+		packages:          panels.NewPackages(st),
+		homePanel:         panels.NewHome(paths, home, st),
+		staged:            panels.NewStaged(paths, home, st),
+		issues:            panels.NewIssues(st),
+		mainPkg:           mainpanel.NewPackage(paths, home, st),
+		mainHome:          mainpanel.NewHomeEntry(paths, home, st),
+		mainStaged:        mainpanel.NewStagedPlan(paths, home, st),
+		mainLog:           mainpanel.NewLog(paths, home, st),
+		mainRestore:       mainpanel.NewRestorePlan(st),
+		mainDetail:        mainpanel.NewText(),
+		mainDiff:          mainpanel.NewText(),
+		fixPopup:          popups.NewFix(st),
+		keysPopup:         popups.NewKeys(st),
+		assignPopup:       popups.NewAssign(st),
+		confirmPopup:      popups.NewConfirm(st),
+		errorPopup:        popups.NewError(st),
+		commitPopup:       popups.NewCommit(st),
+		firstRunPopup:     popups.NewFirstRun(st),
+		staging:           dotfiles.Staging{},
+		repositoryChoices: map[string]dotfiles.RepositoryChoice{},
+		repositoriesPopup: popups.NewRepositories(st),
+		failures:          map[string]string{},
+		blocked:           map[string]string{},
+		runner:            stow.Runner{Dotfiles: paths.Dotfiles, Target: paths.Target},
+		buildAdoptPlan:    dotfiles.BuildAdoptPlanContext,
+		inspectHomeEntry:  mainpanel.InspectContext,
+		planReady:         true,
 	}
 	m.side = [SidePanelCount]Panel{m.status, m.packages, m.homePanel, m.staged, m.issues}
 	m.git = inspectGit(paths)
@@ -374,6 +378,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.unstageGroup(msg.Package)
 	case panels.RenameGroupMsg:
 		return m, m.openRename(msg.Package)
+	case popups.RepositoriesCancelledMsg:
+		m.popup = popupNone
+		return m, nil
+	case popups.RepositoriesChosenMsg:
+		m.popup = popupNone
+		for path, choice := range msg.Choices {
+			m.repositoryChoices[path] = choice
+		}
+		m.applyRepositoryChoices()
+		return m, m.stagingChanged()
 	case popups.AssignedMsg:
 		return m, m.applyAssignment(msg)
 	case popups.AssignCancelledMsg:
@@ -505,6 +519,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.fixPopup.Update(msg)
 	case popupCommit:
 		return m, m.commitPopup.Update(msg)
+	case popupRepositories:
+		return m, m.repositoriesPopup.Update(msg)
 	case popupFirstRun:
 		return m, m.firstRunPopup.Update(msg)
 	}
@@ -607,9 +623,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.relayout()
 			return m, nil
 		}
-	case key.Matches(msg, m.keys.Toggle):
+	case key.Matches(msg, m.keys.Repositories):
 		if m.mainContext() == contextStagedPlan {
-			return m, m.toggleRemoveGit(m.staged.SelectedPackage())
+			return m, m.openRepositories()
 		}
 	}
 
@@ -785,6 +801,8 @@ func (m *Model) relayout() {
 		m.fixPopup.SetSize(rect.Width, rect.Height)
 	case popupCommit:
 		m.commitPopup.SetSize(rect.Width, rect.Height)
+	case popupRepositories:
+		m.repositoriesPopup.SetSize(rect.Width, rect.Height)
 	case popupFirstRun:
 		m.firstRunPopup.SetSize(rect.Width, rect.Height)
 	}
@@ -866,10 +884,16 @@ func cloneStaging(staging dotfiles.Staging) dotfiles.Staging {
 	return copy
 }
 
-func (m *Model) applyRemoveGit() {
-	for i := range m.plan.Packages {
-		m.plan.Packages[i].RemoveNestedGit = m.removeGit[m.plan.Packages[i].Package]
+func cloneChoices(choices map[string]dotfiles.RepositoryChoice) map[string]dotfiles.RepositoryChoice {
+	copy := make(map[string]dotfiles.RepositoryChoice, len(choices))
+	for path, choice := range choices {
+		copy[path] = choice
 	}
+	return copy
+}
+
+func (m *Model) applyRepositoryChoices() {
+	dotfiles.ApplyRepositoryChoices(&m.plan, m.repositoryChoices)
 }
 
 func (m *Model) refreshStagingViews() {
@@ -881,6 +905,19 @@ func (m *Model) refreshStagingViews() {
 }
 
 func (m *Model) stagingChanged() tea.Cmd {
+	for source := range m.repositoryChoices {
+		covered := false
+		for path := range m.staging {
+			if source == path || pathInside(path, source) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			delete(m.repositoryChoices, source)
+		}
+	}
+
 	m.planVersion++
 	m.planReady = len(m.staging) == 0
 	m.applyPending = false
@@ -900,7 +937,7 @@ func (m *Model) stagingChanged() tea.Cmd {
 		}
 		return sync
 	}
-	req := &planRequest{version: m.planVersion, staging: cloneStaging(m.staging)}
+	req := &planRequest{version: m.planVersion, staging: cloneStaging(m.staging), choices: cloneChoices(m.repositoryChoices)}
 	if m.planActive {
 		m.planPending = req
 		return tea.Batch(sync, m.staged.SetScanning(true))
@@ -915,7 +952,10 @@ func (m *Model) startPlan(req planRequest, apply bool) tea.Cmd {
 	m.planCancel = cancel
 	build, paths := m.buildAdoptPlan, m.paths
 	return func() tea.Msg {
-		return planBuiltMsg{version: req.version, plan: build(ctx, paths, req.staging), apply: apply}
+		plan := build(ctx, paths, req.staging)
+		dotfiles.ApplyRepositoryChoices(&plan, req.choices)
+		dotfiles.ValidateRepositoryChoices(ctx, &plan)
+		return planBuiltMsg{version: req.version, plan: plan, apply: apply}
 	}
 }
 
@@ -938,7 +978,7 @@ func (m Model) handlePlanBuilt(msg planBuiltMsg) (tea.Model, tea.Cmd) {
 	}
 	m.plan = msg.plan
 	m.mainStaged.SetScanning(false)
-	m.applyRemoveGit()
+	m.applyRepositoryChoices()
 	m.planReady = true
 	m.blocked = map[string]string{}
 	for _, pkg := range m.plan.Packages {
@@ -999,10 +1039,7 @@ func (m *Model) applyAssignment(msg popups.AssignedMsg) tea.Cmd {
 				m.staging[path] = msg.Package
 			}
 		}
-		if m.removeGit[from] {
-			delete(m.removeGit, from)
-			m.removeGit[msg.Package] = true
-		}
+
 		return tea.Batch(m.stagingChanged(), m.setFlash("renamed "+from+" to "+msg.Package))
 	}
 	return m.stage(msg.Path, msg.Package)
@@ -1047,17 +1084,35 @@ func (m *Model) unstageGroup(pkg string) tea.Cmd {
 			delete(m.staging, path)
 		}
 	}
-	delete(m.removeGit, pkg)
 	return m.stagingChanged()
 }
 
-func (m *Model) toggleRemoveGit(pkg string) tea.Cmd {
-	if pkg == "" || !m.mainStaged.HasWarning(pkg) {
+func (m *Model) openRepositories() tea.Cmd {
+	if !m.planReady || m.planActive {
+		return m.setFlash("Scan in progress")
+	}
+	row, ok := m.staged.Selected()
+	if !ok {
 		return nil
 	}
-	m.removeGit[pkg] = !m.removeGit[pkg]
-	m.applyRemoveGit()
-	return m.syncMain()
+	var repositories []dotfiles.NestedRepository
+	for _, pkg := range m.plan.Packages {
+		if pkg.Package != row.Package {
+			continue
+		}
+		for _, r := range pkg.Repositories {
+			if row.Group || r.Source == row.Path || pathInside(row.Path, r.Source) {
+				repositories = append(repositories, r)
+			}
+		}
+	}
+	if len(repositories) == 0 {
+		return m.setFlash("no Git repositories in this selection")
+	}
+	m.repositoriesPopup.Open(repositories)
+	m.popup = popupRepositories
+	m.relayout()
+	return nil
 }
 
 func (m Model) knownPackages() []string {
@@ -1171,6 +1226,8 @@ func (m Model) render() string {
 				content = m.fixPopup.View()
 			case popupCommit:
 				content = m.commitPopup.View()
+			case popupRepositories:
+				content = m.repositoriesPopup.View()
 			case popupFirstRun:
 				content = m.firstRunPopup.View()
 			}

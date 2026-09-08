@@ -22,35 +22,6 @@ func (c *cancelOnCheckContext) Err() error {
 	return nil
 }
 
-func TestHasNestedGitContextFindsNestedGit(t *testing.T) {
-	paths := newPaths(t)
-	root := filepath.Join(paths.Target, ".config", "tool")
-	writeFile(t, filepath.Join(root, "nested", ".git", "config"), "x")
-
-	found, err := HasNestedGitContext(context.Background(), root)
-	if err != nil {
-		t.Fatalf("HasNestedGitContext: %v", err)
-	}
-	if !found {
-		t.Fatal("HasNestedGitContext did not find nested .git")
-	}
-}
-
-func TestHasNestedGitContextHonorsCancellation(t *testing.T) {
-	paths := newPaths(t)
-	root := filepath.Join(paths.Target, ".config")
-	writeFile(t, filepath.Join(root, "child", "file"), "x")
-	ctx := &cancelOnCheckContext{Context: context.Background(), stopAt: 3}
-
-	_, err := HasNestedGitContext(ctx, root)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("HasNestedGitContext error = %v, want context.Canceled", err)
-	}
-	if ctx.checks < ctx.stopAt {
-		t.Fatalf("context checks = %d, want traversal to check for cancellation", ctx.checks)
-	}
-}
-
 func TestBuildAdoptPlanContextPropagatesCancellationFromFinalPackage(t *testing.T) {
 	paths := newPaths(t)
 	first := filepath.Join(paths.Target, ".first")

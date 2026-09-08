@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/horbo/stower/internal/config"
 	"github.com/horbo/stower/internal/dotfiles"
+	"github.com/horbo/stower/internal/gitx"
 )
 
 type State string
@@ -21,6 +23,7 @@ const (
 	Foreign      State = "foreign"
 	Unnormalized State = "unnormalized"
 	Unowned      State = "unowned"
+	Invisible    State = "invisible"
 )
 
 type Issue struct {
@@ -53,11 +56,12 @@ func Inspect(paths config.Paths) ([]Issue, []PackageReport, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	links, linkErr := phantomGitlinks(paths)
 	var issues []Issue
 	var reports []PackageReport
 	var errs []error
 	for _, name := range names {
-		report := InspectPackage(paths, name)
+		report := inspectPackage(paths, name, links, linkErr)
 		reports = append(reports, report)
 		if report.Err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", name, report.Err))
@@ -72,7 +76,16 @@ func Inspect(paths config.Paths) ([]Issue, []PackageReport, error) {
 }
 
 func InspectPackage(paths config.Paths, pkg string) PackageReport {
+	links, err := phantomGitlinks(paths)
+	return inspectPackage(paths, pkg, links, err)
+}
+
+func inspectPackage(paths config.Paths, pkg string, links []string, linkErr error) PackageReport {
 	report := PackageReport{Package: pkg}
+	if linkErr != nil {
+		report.Err = linkErr
+		return report
+	}
 	base, err := dotfiles.WalkPackage(paths, pkg)
 	if err != nil {
 		report.Err = err
@@ -83,9 +96,16 @@ func InspectPackage(paths config.Paths, pkg string) PackageReport {
 		report.Err = err
 		return report
 	}
+	if issue := phantomGitlinkIssue(pkg, links); issue != nil {
+		report.Entries = append(report.Entries, *issue)
+	}
 	states := map[string]dotfiles.State{}
+	submodules := map[string]dotfiles.Entry{}
 	for _, entry := range base {
 		states[entry.PkgRel] = entry.State
+		if entry.Submodule {
+			submodules[entry.PkgRel] = entry
+		}
 	}
 	var walk func(string) error
 	walk = func(rel string) error {
@@ -95,6 +115,18 @@ func InspectPackage(paths config.Paths, pkg string) PackageReport {
 		}
 		for _, child := range children {
 			pkgRel := filepath.Join(rel, child.Name())
+			if entry, ok := submodules[pkgRel]; ok {
+				item := Issue{Package: pkg, Entry: entry, State: OK}
+				switch entry.State {
+				case dotfiles.Unlinked:
+					item.State = Missing
+				case dotfiles.Conflict:
+					item.State = Replaced
+				}
+				item.Detail = "submodule: " + string(item.State)
+				report.Entries = append(report.Entries, item)
+				continue
+			}
 			entry := dotfiles.Entry{PkgRel: pkgRel, TargetRel: dotfiles.PackageToTarget(pkgRel), IsDir: child.IsDir()}
 			item := Issue{Package: pkg, Entry: entry, State: OK}
 			target := entry.TargetPath(paths)
@@ -151,6 +183,9 @@ func InspectPackage(paths config.Paths, pkg string) PackageReport {
 		if path == root {
 			return nil
 		}
+		if entry.Name() == ".git" && entry.IsDir() {
+			return filepath.SkipDir
+		}
 		rel, _ := filepath.Rel(root, path)
 		top := filepath.Dir(rel) == "."
 		if !(top && strings.HasPrefix(entry.Name(), ".")) && !(!top && strings.HasPrefix(entry.Name(), "dot-")) {
@@ -178,6 +213,50 @@ func InspectPackage(paths config.Paths, pkg string) PackageReport {
 	})
 	report.Err = err
 	return report
+}
+
+func phantomGitlinks(paths config.Paths) ([]string, error) {
+	if info, err := os.Lstat(filepath.Join(paths.Dotfiles, ".git")); err != nil || !info.IsDir() {
+		return nil, nil
+	}
+	ctx := context.Background()
+	links, err := gitx.IndexGitlinks(ctx, paths.Dotfiles)
+	if err != nil || len(links) == 0 {
+		return nil, err
+	}
+	modules, err := gitx.ListSubmodules(ctx, paths.Dotfiles)
+	if err != nil {
+		return nil, err
+	}
+	var phantom []string
+	for _, link := range links {
+		registered := false
+		for _, m := range modules {
+			if filepath.ToSlash(m.Path) == link {
+				registered = true
+			}
+		}
+		if !registered {
+			phantom = append(phantom, link)
+		}
+	}
+	return phantom, nil
+}
+
+func phantomGitlinkIssue(pkg string, links []string) *Issue {
+	for _, link := range links {
+		if link != pkg && !strings.HasPrefix(pkg+"/", link+"/") && !strings.HasPrefix(link+"/", pkg+"/") {
+			continue
+		}
+		entry := dotfiles.Entry{PkgRel: "", TargetRel: "", IsDir: true}
+		return &Issue{
+			Package: pkg,
+			Entry:   entry,
+			State:   Invisible,
+			Detail:  link + " is a Git link without a .gitmodules entry; content under it is invisible to Git and will never be committed",
+		}
+	}
+	return nil
 }
 
 func replacedDirectory(paths config.Paths, pkg, rel string, entries []dotfiles.Entry) (bool, error) {

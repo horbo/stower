@@ -1,6 +1,7 @@
 package dotfiles
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/horbo/stower/internal/config"
+	"github.com/horbo/stower/internal/gitx"
 )
 
 type State int
@@ -37,6 +39,7 @@ type Entry struct {
 	TargetRel string
 	IsDir     bool
 	State     State
+	Submodule bool
 }
 
 func (e Entry) PackagePath(paths config.Paths, pkg string) string {
@@ -77,14 +80,25 @@ func WalkPackage(paths config.Paths, pkg string) ([]Entry, error) {
 	if !info.IsDir() {
 		return nil, fmt.Errorf("%s is not a directory", root)
 	}
+	modules, err := gitx.ListSubmodules(context.Background(), paths.Dotfiles)
+	if err != nil {
+		return nil, err
+	}
+	roots := map[string]bool{}
+	for _, m := range modules {
+		if PackageOf(m.Path) == pkg {
+			rel, _ := filepath.Rel(root, filepath.Join(paths.Dotfiles, m.Path))
+			roots[rel] = true
+		}
+	}
 	var entries []Entry
-	if err := walkPackageDir(paths, pkg, "", &entries); err != nil {
+	if err := walkPackageDir(paths, pkg, "", &entries, roots); err != nil {
 		return nil, err
 	}
 	return entries, nil
 }
 
-func walkPackageDir(paths config.Paths, pkg, relPkg string, out *[]Entry) error {
+func walkPackageDir(paths config.Paths, pkg, relPkg string, out *[]Entry, roots map[string]bool) error {
 	dir := filepath.Join(paths.Dotfiles, pkg, relPkg)
 	children, err := os.ReadDir(dir)
 	if err != nil {
@@ -96,6 +110,7 @@ func walkPackageDir(paths config.Paths, pkg, relPkg string, out *[]Entry) error 
 			PkgRel:    pkgRel,
 			TargetRel: PackageToTarget(pkgRel),
 			IsDir:     child.IsDir(),
+			Submodule: roots[pkgRel],
 		}
 		targetPath := filepath.Join(paths.Target, entry.TargetRel)
 
@@ -112,7 +127,16 @@ func walkPackageDir(paths config.Paths, pkg, relPkg string, out *[]Entry) error 
 				entry.State = Conflict
 			}
 		case info.IsDir() && child.IsDir():
-			if err := walkPackageDir(paths, pkg, pkgRel, out); err != nil {
+			if entry.Submodule {
+				state, err := submoduleDirectoryState(paths, pkg, entry)
+				if err != nil {
+					return err
+				}
+				entry.State = state
+				*out = append(*out, entry)
+				continue
+			}
+			if err := walkPackageDir(paths, pkg, pkgRel, out, roots); err != nil {
 				return err
 			}
 			continue
@@ -230,4 +254,86 @@ func resolveLink(link string) (string, error) {
 		dest = filepath.Join(filepath.Dir(link), dest)
 	}
 	return filepath.EvalSymlinks(dest)
+}
+
+func submoduleDirectoryState(paths config.Paths, pkg string, entry Entry) (State, error) {
+	root := entry.PackagePath(paths, pkg)
+	state := Linked
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == root {
+			return nil
+		}
+		if stowIgnores(d.Name()) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, _ := filepath.Rel(filepath.Join(paths.Dotfiles, pkg), path)
+		child := Entry{PkgRel: rel, TargetRel: PackageToTarget(rel), IsDir: d.IsDir()}
+		target := child.TargetPath(paths)
+		info, err := os.Lstat(target)
+		if errors.Is(err, fs.ErrNotExist) {
+			if state != Conflict {
+				state = Unlinked
+			}
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&fs.ModeSymlink != 0 && ResolvesTo(target, path) && StowOwns(paths, pkg, child) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if info.IsDir() && d.IsDir() {
+			return nil
+		}
+		state = Conflict
+		if d.IsDir() {
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	if err != nil {
+		return state, err
+	}
+	targetRoot := entry.TargetPath(paths)
+	err = filepath.WalkDir(targetRoot, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == targetRoot {
+			return nil
+		}
+		rel, _ := filepath.Rel(targetRoot, path)
+		if _, err := os.Lstat(filepath.Join(root, rel)); errors.Is(err, fs.ErrNotExist) {
+			state = Conflict
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+		} else if err != nil {
+			return err
+		}
+		if d.Name() == ".git" {
+			state = Conflict
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+		}
+		return nil
+	})
+	return state, err
+}
+
+func stowIgnores(name string) bool {
+	return name == ".git" || name == ".gitignore"
 }

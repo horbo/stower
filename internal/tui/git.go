@@ -253,7 +253,7 @@ func (m Model) commitChange(title string, succeeded []string) (gitx.Change, bool
 	return gitx.Change{}, false
 }
 
-func (m *Model) offerCommit(title string, succeeded []string) tea.Cmd {
+func (m *Model) offerCommitPaths(title string, succeeded, extra []string) tea.Cmd {
 	if !m.git.available || !m.git.repo || len(succeeded) == 0 {
 		return nil
 	}
@@ -261,5 +261,6 @@ func (m *Model) offerCommit(title string, succeeded []string) tea.Cmd {
 	if !ok {
 		return nil
 	}
-	return prepareCommitCmd(m.paths.Dotfiles, succeeded, change, false)
+	paths := append(append([]string(nil), succeeded...), extra...)
+	return prepareCommitCmd(m.paths.Dotfiles, paths, change, false)
 }

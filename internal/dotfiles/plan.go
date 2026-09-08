@@ -10,6 +10,7 @@ import (
 	"sort"
 
 	"github.com/horbo/stower/internal/config"
+	"github.com/horbo/stower/internal/gitx"
 )
 
 type Staging map[string]string
@@ -30,20 +31,13 @@ type Blocked struct {
 	Reason  string
 }
 
-type Warning struct {
-	Path    string
-	Package string
-	Message string
-}
-
 type PackageAdopt struct {
-	Package         string
-	Moves           []Move
-	CreateDirs      []string
-	ExpectedLinks   []Link
-	Warnings        []Warning
-	Blocked         []Blocked
-	RemoveNestedGit bool
+	Package       string
+	Moves         []Move
+	CreateDirs    []string
+	ExpectedLinks []Link
+	Blocked       []Blocked
+	Repositories  []NestedRepository
 }
 
 type AdoptPlan struct {
@@ -149,7 +143,7 @@ func buildPackageAdopt(ctx context.Context, paths config.Paths, pkg string, stag
 			continue
 		}
 
-		nested, err := HasNestedGitContext(ctx, path)
+		repositories, err := scanRepositories(ctx, path, dest)
 		if err != nil {
 			if ctx.Err() != nil {
 				return out
@@ -160,26 +154,21 @@ func buildPackageAdopt(ctx context.Context, paths config.Paths, pkg string, stag
 		out.Moves = append(out.Moves, Move{From: path, To: dest})
 		out.CreateDirs = appendDir(out.CreateDirs, filepath.Dir(dest))
 		out.ExpectedLinks = append(out.ExpectedLinks, expectedLink(path, dest))
-		if nested {
-			out.Warnings = append(out.Warnings, Warning{
-				Path:    path,
-				Package: pkg,
-				Message: "contains a nested .git directory; git would treat it as an embedded repository",
-			})
-		}
+		out.Repositories = append(out.Repositories, repositories...)
 	}
 	return out
 }
 
 type RestorePlan struct {
-	Paths     config.Paths
-	Package   string
-	Entries   []Entry
-	Selected  []string
-	Moves     []Move
-	Blocked   []Blocked
-	RemoveDir string
-	Fatal     error
+	Submodules []gitx.Submodule
+	Paths      config.Paths
+	Package    string
+	Entries    []Entry
+	Selected   []string
+	Moves      []Move
+	Blocked    []Blocked
+	RemoveDir  string
+	Fatal      error
 }
 
 func (p RestorePlan) Runnable() bool {
@@ -250,6 +239,7 @@ func BuildEntryRestorePlan(paths config.Paths, pkg string, pkgRels []string) Res
 	if err := CheckSameDevice(paths); err != nil {
 		plan.Fatal = err
 	}
+	planRestoreRepositories(&plan)
 	return plan
 }
 

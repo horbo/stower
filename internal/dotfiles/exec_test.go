@@ -240,7 +240,7 @@ func TestExecuteRemovesNestedGit(t *testing.T) {
 	writeFile(t, filepath.Join(paths.Target, ".repo", ".git", "config"), "git")
 	writeFile(t, filepath.Join(paths.Target, ".repo", "file"), "x")
 	plan := BuildAdoptPlan(paths, Staging{filepath.Join(paths.Target, ".repo"): "repo"})
-	plan.Packages[0].RemoveNestedGit = true
+	plan.Packages[0].Repositories[0].Choice.Action = RemoveRepositoryGit
 
 	summary, _ := collect(t, func(events chan Event) Summary {
 		return Execute(context.Background(), plan, &fakeRunner{}, events)

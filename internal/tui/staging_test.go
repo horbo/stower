@@ -12,6 +12,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/horbo/stower/internal/config"
+	"github.com/horbo/stower/internal/dotfiles"
+	"github.com/horbo/stower/internal/tui/popups"
 )
 
 func newStagingModel(t *testing.T) (tea.Model, config.Paths) {
@@ -303,7 +305,7 @@ func TestManagedEntriesCannotBeStagedOrExpanded(t *testing.T) {
 	}
 }
 
-func TestNestedGitWarningAndToggle(t *testing.T) {
+func TestRepositoryChoicePopup(t *testing.T) {
 	model, paths := newStagingModel(t)
 	model = send(t, model, "2")
 	model = moveTo(t, model, filepath.Join(paths.Target, ".config"))
@@ -314,24 +316,40 @@ func TestNestedGitWarningAndToggle(t *testing.T) {
 
 	model = send(t, model, "3")
 	plain := ansi.Strip(model.View().Content)
-	if !strings.Contains(plain, "nested .git") {
-		t.Fatalf("the plan has no nested .git warning:\n%s", plain)
+	repositoryKey := false
+	for _, binding := range model.(Model).mainPanel().Keys() {
+		if binding.Help().Key == "x" {
+			repositoryKey = true
+		}
 	}
-	if !strings.Contains(plain, "[ ] remove .git after move") {
-		t.Fatalf("the plan has no toggle:\n%s", plain)
+	if !repositoryKey {
+		t.Fatal("the staged plan help does not list the repository key")
+	}
+	if !strings.Contains(plain, "Keep repository") {
+		t.Fatalf("missing default action: %s", plain)
+	}
+	model = send(t, model, "x")
+	if model.(Model).popup != popupRepositories {
+		t.Fatal("repository popup did not open")
+	}
+	popupView := ansi.Strip(model.View().Content)
+	if !strings.Contains(popupView, "space action") {
+		t.Fatalf("repository popup captured input but was not rendered:\n%s", popupView)
 	}
 
+	model = send(t, model, "space")
+	model = send(t, model, "enter")
+	path := filepath.Join(paths.Target, ".config", "foo")
+	if model.(Model).repositoryChoices[path].Action != dotfiles.RemoveRepositoryGit {
+		t.Fatal("removal choice was not saved")
+	}
 	model = send(t, model, "x")
-	if !model.(Model).removeGit["foo"] {
-		t.Fatal("x did not toggle remove .git for foo")
+	model = send(t, model, "space")
+	model = send(t, model, "esc")
+	if model.(Model).repositoryChoices[path].Action != dotfiles.RemoveRepositoryGit {
+		t.Fatal("cancel changed the choice")
 	}
-	if !strings.Contains(ansi.Strip(model.View().Content), "[x] remove .git after move") {
-		t.Fatal("the toggle is not shown as enabled")
-	}
-	model = send(t, model, "x")
-	if model.(Model).removeGit["foo"] {
-		t.Fatal("x did not toggle remove .git back off")
-	}
+
 }
 
 func TestBlockedWhenTheDestinationExists(t *testing.T) {
@@ -541,5 +559,31 @@ func TestStagingADotPrefixedEntryIsRejected(t *testing.T) {
 	}
 	if !strings.Contains(ansi.Strip(model.View().Content), "dot-") {
 		t.Fatal("the rejection is not visible in the key bar")
+	}
+}
+
+func TestRepositoryChoicesFollowStagingCoverage(t *testing.T) {
+	model, paths := newStagingModel(t)
+	m := model.(Model)
+	parent := filepath.Join(paths.Target, ".config")
+	child := filepath.Join(parent, "foo")
+	m.staging = dotfiles.Staging{child: "old"}
+	choice := dotfiles.RepositoryChoice{Action: dotfiles.ConvertRepository, URL: "https://example.invalid/repo.git"}
+	m.repositoryChoices[child] = choice
+	m.stage(parent, "new")
+	if m.repositoryChoices[child] != choice {
+		t.Fatal("staging a parent discarded the repository choice")
+	}
+	m.renaming = "new"
+	m.applyAssignment(popups.AssignedMsg{Package: "renamed"})
+	if m.repositoryChoices[child] != choice || m.staging[parent] != "renamed" {
+		t.Fatal("rename changed the repository choice")
+	}
+	m.unstage(parent)
+	if len(m.repositoryChoices) != 0 {
+		t.Fatal("unstage retained repository choices")
+	}
+	if _, err := os.Stat(filepath.Join(child, ".git")); err != nil {
+		t.Fatal("staging changed Git metadata")
 	}
 }

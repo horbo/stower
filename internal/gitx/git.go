@@ -105,6 +105,9 @@ func AddAndCommit(dir string, pkgs []string, subject string) error {
 	if err := validateSubject(subject); err != nil {
 		return err
 	}
+	if err := CheckCommitScope(dir, pkgs); err != nil {
+		return err
+	}
 	args := make([]string, 0, len(pkgs)+3)
 	args = append(args, "add", "-A", "--")
 	for _, pkg := range pkgs {
@@ -195,6 +198,34 @@ func validateSubject(subject string) error {
 	}
 	if strings.ContainsAny(subject, "\n\r") {
 		return fmt.Errorf("%w: the subject must be a single line", ErrInvalidSubject)
+	}
+	return nil
+}
+
+func CheckCommitScope(dir string, paths []string) error {
+	for _, path := range paths {
+		if err := validatePathspec(path); err != nil {
+			return err
+		}
+	}
+	out, err := run(dir, "diff", "--cached", "--name-only", "-z")
+	if err != nil {
+		return err
+	}
+	for _, path := range strings.Split(out, "\x00") {
+		if path == "" {
+			continue
+		}
+		allowed := false
+		for _, selected := range paths {
+			if path == selected || strings.HasPrefix(path, selected+"/") {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return fmt.Errorf("staged changes outside the commit preview: %s", path)
+		}
 	}
 	return nil
 }

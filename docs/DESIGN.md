@@ -77,12 +77,15 @@ cmd/stower/main.go          flags, stow detection, start TUI or run a subcommand
 internal/config/            Paths{Target, Dotfiles}, flags --dotfiles/--target, env STOWER_DOTFILES
 internal/dotfiles/
   mapping.go                TargetToPackage / PackageToTarget, table-tested both ways
-  scan.go                   ListPackages, WalkPackage (link points), ManagedBy
+  scan.go                   ListPackages, WalkPackage (link points, calls
+                            gitx.ListSubmodules and can fail on an invalid .gitmodules
+                            or one containing include directives), ManagedBy
   plan.go                   AdoptPlan (staging -> moves), RestorePlan (package -> moves back)
   exec.go                   transactional execution: move journal, rollback, event stream
   validate.go               staging and plan validation rules
 internal/stow/runner.go     stow subprocess, exit codes, conflict parsing
-internal/doctor/status.go   link health states and fix actions
+internal/doctor/status.go   link health states and fix actions; submodule and phantom
+                            gitlink reports are never automatically fixable
 internal/gitx/git.go        IsRepo, Init, DirtyPaths, AddAndCommit
 internal/tui/
   app.go                    root model: focus, popup, key dispatch, data refresh
@@ -131,10 +134,11 @@ steps and never kills a running stow subprocess.
      message in the key bar;
    - destination inside the package already exists: the entry is `blocked` in the plan;
    - package name must match `[A-Za-z0-9._-]+` and must not start with `.`;
-   - a staged directory containing a nested `.git`: warning, with a plan toggle
-     `remove .git after move`, off by default (git would otherwise treat it as an embedded
-     repository). This scan happens only after staging, never in the Home preview. A scan
-     error blocks the affected entry and is displayed with its reason; refresh retries it;
+   - a staged directory containing nested `.git` entries: list each repository with
+     `Keep repository` (default), `Remove .git`, or `Convert to submodule`. The `x` popup
+     edits decisions per repository, including the submodule URL suggested from `origin`.
+     This scan happens only after staging, never in Home preview. A traversal error blocks
+     the affected entry; unsupported Git layouts disable conversion with a reason;
    - first path component of the staged entry starts with `dot-`: rejected (not reversible
      under `--dotfiles`);
    - target and dotfiles on different devices (`Stat_t.Dev`): hard error before any move.
@@ -151,13 +155,57 @@ steps and never kills a running stow subprocess.
    second package does not undo the first. Per package:
    1. `MkdirAll` for package directories, remembering which ones were created;
    2. `os.Rename` each entry, appending every move to a journal;
-   3. `stow -n -v -R <pkg>`: on conflict, roll back the journal, remove the created
-      directories, show stderr in the log;
-   4. `stow -v -R <pkg>`: on error, same rollback;
-   5. only now, when `remove .git after move` was toggled, delete nested `.git` directories
-      inside the moved entries (deleting earlier would make the rollback lossy); a failure
-      here is reported but does not undo the adoption;
-   6. on success, offer a commit and refresh every panel.
+   3. register selected repositories with `git submodule add` using their existing working
+      trees, then `git submodule absorbgitdirs`; record Git metadata for rollback;
+   4. `stow -n -v -R <pkg>`, then `stow -v -R <pkg>`; failures roll back Git metadata,
+      moves and created directories, with errors shown in the log. Moves and created
+      directories are always rolled back, including when the Git metadata rollback itself
+      fails; the files then return to `$HOME` while the metadata may stay inconsistent and
+      is retained under `.git/stower-rollback-*`;
+   5. only now delete the explicitly selected `.git` directories; a failed deletion and a
+      failed transaction close do not invalidate the adoption, but appear as warnings in
+      the summary and the log;
+   6. on success, offer a commit including `.gitmodules` when changed, and refresh panels.
+
+Repository choices exist only in session staging. Renaming a package or replacing staged
+children with their parent preserves choices for repositories still covered. Unstage drops
+those choices without filesystem changes. Conversion requires a commit, a valid URL and a
+standalone dotfiles Git repository. Choices are applied and validated on the plan path, so a
+conflicting destination appears in the Staged plan as soon as the popup closes, not only at
+Apply; repositories left at `Keep` are never validated, which keeps planning free of Git
+subprocesses in the common case.
+
+Repository URLs are validated against an allowlist: only `https://`, `ssh://`, `git://`,
+the scp-like `[user@]host:path` form and absolute local paths are accepted. Transport
+helpers (`ext::`, any string containing `::`), other schemes including `http://` and
+`file://`, URLs carrying credentials, leading dashes, control characters, surrounding
+whitespace and strings over 2048 bytes are rejected. Because `InspectRepository` fills the
+URL from `remote.origin.url`, a repository whose origin uses `http://` or `file://` needs
+its URL edited by hand before it can be converted. Known limitation: the Git environment is
+not hardened (`GIT_*` variables are inherited, `protocol.ext.allow=never` is not set).
+
+A gitlink recorded in the index without a matching `.gitmodules` entry ("phantom gitlink")
+makes Git blind to everything under that path. Such a path blocks conversion, blocks any
+destination under or above it, and is reported by the doctor as a non-fixable issue. No fetch,
+push, clone or automatic commit runs during conversion. Local staged, unstaged, untracked
+and ignored files are preserved; the superproject records only the repository's HEAD.
+Worktrees, shared/external Git metadata and repositories containing other repositories or
+submodules cannot be converted in this version.
+
+Submodule Restore uses `.gitmodules`, gitlinks and local Git metadata, so it works after
+restarting stower or cloning and initializing submodules. It restores a standalone `.git`
+directory, removes the submodule registration and preserves the repository's current state.
+Absorbed metadata is copied, leaving the superproject's historical metadata available. A
+submodule is an indivisible Restore entry, including when stow has unfolded its directory
+into individual links. Missing initialization and unsupported metadata block Restore.
+Restore does not recover `.git` directories explicitly deleted by `Remove .git`.
+
+Git transactions snapshot the index, config and `.gitmodules` per package; handled failures
+and cancellation roll back the current package, preserving earlier successes. Failed rollback
+retains recovery files under `.git/stower-rollback-*` and reports their location. This is not
+an automatic recovery mechanism for a terminated process. Existing unrelated `.gitmodules`
+edits must be committed first; staged additions/removals matching gitlinks are recognized
+as pending submodule registrations, allowing Restore before commit.
 
 ### Restore
 
@@ -222,6 +270,8 @@ operations for scripting and verification.
   for the touched packages and proposes a subject-only message: `stower: add zsh (3 files)`,
   `stower: remove zsh`, `stower: fix claude/settings.json`. Execution:
   `git -C <dotfiles> add -A -- <pkg>` (also captures deletions) then `git commit -m`.
+  Submodule operations include `.gitmodules` in both preview and staging. Commits reject
+  staged paths outside the preview before modifying the index.
 - Packages shows `*` next to packages with uncommitted changes; Status shows the total of
   dirty top-level entries (packages and anything else at the root, so a modified `README` is
   not invisible), `git clean`, or `no git`.
@@ -259,8 +309,10 @@ screen modes (`_` remains an alias for `-`), `R` restow all packages (with Confi
 re-scan without touching the filesystem, `q` quit, `esc` closes a popup, returns focus from
 main to the side panel, or clears the Home filter. A finished operation log closes with either
 `enter` or `esc`, restoring the panel and focus that were active before the operation started.
-`x` toggles `remove .git after move` while the Staged plan is shown; the `x` context menu is
-post-v1 and will absorb that toggle as one of its items.
+`x` opens `Git repositories` for the selected Staged entry or package. In the popup,
+`j/k` selects a repository, `space` cycles actions, `e` edits the URL when conversion is
+selected, `enter` saves the
+choices and `esc` cancels. Inside URL editing, `enter` accepts and `esc` discards the edit.
 
 Panels never mutate shared state directly: they return a `tea.Cmd` emitting a request message
 (`StageRequestMsg`, `UnstageRequestMsg`, `UnstageGroupMsg`, `RenameGroupMsg`) and the root model
@@ -291,11 +343,9 @@ The main panel content follows the focused panel and its highlighted item:
   visible, while collapsing a node or expanding an already-expanded one leaves the filter
   untouched. A deep search would be a separate asynchronous mode.
 - **Staged plan**: moves grouped by package, expected links, stow command, `✘ blocked` entries
-  with reasons, toggles such as `[x] remove .git after move`. The toggle is **per package**,
-  driven by the package highlighted in the Staged side panel and toggled with `x` (M3 decision:
-  a per-warning cursor would need a second cursor inside main with no key left to drive it).
-  `›` marks the highlighted package in the plan. Changing the toggle updates the existing
-  plan without another filesystem scan.
+  with reasons, and actions per detected repository. Conversion shows its URL, HEAD and
+  any local-change warning. `›` marks the highlighted package. The `x` popup updates choices
+  without another scan; Apply revalidates before execution.
 - **Restore plan: X**: `zsh/dot-zshrc → ~/.zshrc  ✔ linked` per link point,
   `Then: remove empty ~/dotfiles/zsh`, dirty-git warning; blocked variant
   `✘ ~/.zshrc is a regular file → fix in Issues first`.
@@ -408,9 +458,8 @@ Operation flow: Confirm → main becomes Log → Commit popup → every panel re
 - Adopt planning runs in a `tea.Cmd` over a staging snapshot. Every staging change advances
   its version, cancels obsolete work and replaces the pending snapshot. At most one plan
   worker and one latest pending request exist; only the current version can update the plan
-  or open Apply confirmation. `BuildAdoptPlanContext` and `HasNestedGitContext` check
-  cancellation during directory traversal; the original functions wrap them for callers
-  that do not need cancellation. The domain remains independent of Bubble Tea.
+  or open Apply confirmation. `BuildAdoptPlanContext` checks cancellation during directory
+  traversal; the original function wraps it for callers that do not need cancellation. The domain remains independent of Bubble Tea.
 - Home's initial load, refresh and lazy child loading use asynchronous commands and retain
   the existing sort order. The tree keeps one in-flight load per path, identified by path and
   request generation: collapsing a folder cancels its load, a reload cancels every load, and a
@@ -427,7 +476,8 @@ Operation flow: Confirm → main becomes Log → Commit popup → every panel re
 ## Known performance debt
 
 Nested `.git` detection still traverses staged directories without a visited-entry budget,
-but now runs in a cancellable background plan worker, never on Home cursor movement. Large
+but the traversal is pruned at every `.git` entry, inspects a repository only when `.git` is
+a directory, and runs in a cancellable background plan worker, never on Home cursor movement. Large
 trees can therefore take time to prepare; Apply stays unavailable until the current scan
 finishes. Cancellation is cooperative between filesystem operations and cannot interrupt an
 individual blocked filesystem call.

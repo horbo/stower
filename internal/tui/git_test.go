@@ -521,3 +521,32 @@ func TestCommitAfterRestowAndRestore(t *testing.T) {
 		t.Fatalf("git status is not clean:\n%s", status)
 	}
 }
+
+func TestSubmoduleCommitPreviewIncludesGitmodules(t *testing.T) {
+	requireGit(t)
+	isolateGit(t)
+	dir := t.TempDir()
+	git(t, dir, "init")
+	configureRepo(t, dir)
+	if err := os.Mkdir(filepath.Join(dir, "editor"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "editor", "file"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".gitmodules"), []byte("[submodule \"repo\"]\n path = editor/repo\n url = https://example.invalid/repo.git\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := Model{paths: config.Paths{Dotfiles: dir}, git: gitState{available: true, repo: true}}
+	cmd := m.offerCommitPaths(actionApply, []string{"editor"}, []string{".gitmodules"})
+	msg := cmd().(commitPreparedMsg)
+	if msg.err != nil {
+		t.Fatal(msg.err)
+	}
+	if !strings.Contains(strings.Join(msg.lines, "\n"), ".gitmodules") {
+		t.Fatalf("preview omits metadata: %v", msg.lines)
+	}
+	if len(msg.packages) != 2 || msg.packages[1] != ".gitmodules" {
+		t.Fatalf("commit paths: %v", msg.packages)
+	}
+}
