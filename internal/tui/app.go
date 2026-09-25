@@ -202,6 +202,8 @@ type Model struct {
 	restoreEntries []string
 	fixIssue       doctor.Issue
 	fixAction      doctor.Action
+	gitlinkFix     bool
+	gitlinkChoices map[string]dotfiles.RepositoryChoice
 	restowPackages []string
 
 	keysPopup         *popups.Keys
@@ -388,9 +390,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.openRename(msg.Package)
 	case popups.RepositoriesCancelledMsg:
 		m.popup = popupNone
+		m.gitlinkFix = false
 		return m, nil
 	case popups.RepositoriesChosenMsg:
 		m.popup = popupNone
+		if m.gitlinkFix {
+			return m, m.confirmGitlinks(msg.Choices)
+		}
 		for path, choice := range msg.Choices {
 			m.repositoryChoices[path] = choice
 		}
@@ -412,6 +418,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.popup = popupNone
 		m.fixAction = msg.Action
 		return m, m.startConfirmed(actionFix)
+	case gitlinksLoadedMsg:
+		return m, m.gitlinksLoaded(msg)
 	case diffLoadedMsg:
 		if msg.id == m.diffID && m.diffOpen {
 			text := msg.text

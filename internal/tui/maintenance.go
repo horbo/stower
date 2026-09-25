@@ -3,6 +3,8 @@ package tui
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -15,6 +17,12 @@ const (
 	actionFix     = "fix"
 	actionRestow  = "restow"
 )
+
+type gitlinksLoadedMsg struct {
+	issue doctor.Issue
+	rows  []dotfiles.NestedRepository
+	err   error
+}
 
 type diffLoadedMsg struct {
 	id          int
@@ -112,6 +120,13 @@ func (m *Model) openFix() tea.Cmd {
 		return m.setFlash(string(issue.State) + ": no automatic fix")
 	}
 	m.fixIssue = issue
+	if issue.State == doctor.Invisible {
+		paths := m.paths
+		return func() tea.Msg {
+			rows, err := doctor.InspectGitlinks(context.Background(), paths, issue.Package)
+			return gitlinksLoadedMsg{issue: issue, rows: rows, err: err}
+		}
+	}
 	if issue.State == doctor.Replaced {
 		m.fixPopup.Open(issue)
 		m.popup = popupFix
@@ -129,6 +144,61 @@ func (m *Model) openFix() tea.Cmd {
 		m.confirmPopup.Open(actionFix, "Fix "+string(issue.State), []string{issue.Package + "/" + issue.Entry.PkgRel, string(m.fixAction)}, undo)
 		m.popup = popupConfirm
 	}
+	m.relayout()
+	return nil
+}
+
+func (m *Model) gitlinksLoaded(msg gitlinksLoadedMsg) tea.Cmd {
+	if msg.err != nil {
+		m.showError("Cannot repair Git links", msg.err)
+		return nil
+	}
+	if m.popup != popupNone || m.fixIssue.Package != msg.issue.Package {
+		return nil
+	}
+	m.gitlinkFix = true
+	m.repositoriesPopup.OpenTitled("Git links in "+msg.issue.Package, msg.rows)
+	m.popup = popupRepositories
+	m.relayout()
+	return nil
+}
+
+func (m *Model) confirmGitlinks(choices map[string]dotfiles.RepositoryChoice) tea.Cmd {
+	m.gitlinkFix = false
+	m.gitlinkChoices = choices
+	body := []string{"Repair Git links without a .gitmodules entry?"}
+	sources := make([]string, 0, len(choices))
+	for source := range choices {
+		sources = append(sources, source)
+	}
+	sort.Strings(sources)
+	changes, removals := 0, 0
+	for _, source := range sources {
+		choice := choices[source]
+		rel, err := filepath.Rel(m.paths.Dotfiles, source)
+		if err != nil {
+			rel = source
+		}
+		line := "  " + filepath.ToSlash(rel) + " → " + choice.Action.String()
+		if choice.Action == dotfiles.ConvertRepository {
+			line += " (" + choice.URL + ")"
+		}
+		body = append(body, line)
+		if choice.Action != dotfiles.KeepRepository {
+			changes++
+		}
+		if choice.Action == dotfiles.RemoveRepositoryGit {
+			removals++
+		}
+	}
+	if changes == 0 {
+		return m.setFlash("every Git link is set to Keep; nothing to do")
+	}
+	if removals > 0 {
+		body = append(body, "Deleted .git directories and their history cannot be recovered.")
+	}
+	m.confirmPopup.Open(actionFix, "Fix invisible "+m.fixIssue.Package, body, "skip the commit; git reset restores the index")
+	m.popup = popupConfirm
 	m.relayout()
 	return nil
 }
@@ -163,6 +233,12 @@ func (m *Model) startConfirmed(action string) tea.Cmd {
 		})
 	case actionFix:
 		issue, fix := m.fixIssue, m.fixAction
+		if issue.State == doctor.Invisible {
+			choices := m.gitlinkChoices
+			return m.beginOperation("fix", dotfiles.AdoptPlan{}, func(ctx context.Context, events chan<- dotfiles.Event) dotfiles.Summary {
+				return doctor.RepairGitlinks(ctx, paths, issue.Package, choices, events)
+			})
+		}
 		return m.beginOperation("fix", dotfiles.AdoptPlan{}, func(ctx context.Context, events chan<- dotfiles.Event) dotfiles.Summary {
 			return doctor.Fix(ctx, paths, issue, fix, runner, events)
 		})
