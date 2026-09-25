@@ -27,11 +27,12 @@ const (
 )
 
 type Issue struct {
-	Package string
-	Entry   dotfiles.Entry
-	State   State
-	Detail  string
-	Fixable bool
+	Package  string
+	Entry    dotfiles.Entry
+	State    State
+	Detail   string
+	Fixable  bool
+	Gitlinks []string
 }
 
 func (i Issue) Glyph() string {
@@ -244,19 +245,31 @@ func phantomGitlinks(paths config.Paths) ([]string, error) {
 }
 
 func phantomGitlinkIssue(pkg string, links []string) *Issue {
+	var covered, inside []string
 	for _, link := range links {
 		if link != pkg && !strings.HasPrefix(pkg+"/", link+"/") && !strings.HasPrefix(link+"/", pkg+"/") {
 			continue
 		}
-		entry := dotfiles.Entry{PkgRel: "", TargetRel: "", IsDir: true}
-		return &Issue{
-			Package: pkg,
-			Entry:   entry,
-			State:   Invisible,
-			Detail:  link + " is a Git link without a .gitmodules entry; content under it is invisible to Git and will never be committed",
+		covered = append(covered, link)
+		if strings.HasPrefix(link, pkg+"/") {
+			inside = append(inside, link)
 		}
 	}
-	return nil
+	if len(covered) == 0 {
+		return nil
+	}
+	detail := strings.Join(covered, ", ") + " is a Git link without a .gitmodules entry; content under it is invisible to Git and will never be committed"
+	if len(covered) > 1 {
+		detail = strings.Join(covered, ", ") + " are Git links without .gitmodules entries; content under them is invisible to Git and will never be committed"
+	}
+	return &Issue{
+		Package:  pkg,
+		Entry:    dotfiles.Entry{PkgRel: "", TargetRel: "", IsDir: true},
+		State:    Invisible,
+		Detail:   detail,
+		Fixable:  len(inside) == len(covered),
+		Gitlinks: covered,
+	}
 }
 
 func replacedDirectory(paths config.Paths, pkg, rel string, entries []dotfiles.Entry) (bool, error) {

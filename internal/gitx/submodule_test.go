@@ -230,6 +230,44 @@ func TestPhantomGitlinkIsRejected(t *testing.T) {
 	}
 }
 
+func TestPhantomGitlinkCanBeExcepted(t *testing.T) {
+	dir := newRepo(t)
+	addGitlink(t, dir, "a/b")
+	sha := strings.TrimSpace(gitOutput(t, dir, "rev-parse", "HEAD"))
+	gitOutput(t, dir, "update-index", "--add", "--cacheinfo", "160000,"+sha+",c/d")
+	if err := CheckSubmoduleMetadataExcept(context.Background(), dir, []string{"a/b", "c/d"}); err != nil {
+		t.Fatal(err)
+	}
+	err := CheckSubmoduleMetadataExcept(context.Background(), dir, []string{"a/b"})
+	if err == nil || !strings.Contains(err.Error(), "c/d") {
+		t.Fatalf("metadata check: %v", err)
+	}
+}
+
+func TestUntrackRollsBack(t *testing.T) {
+	dir := newRepo(t)
+	addGitlink(t, dir, "a/b")
+	tx, err := BeginSubmoduleTransaction(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Untrack(context.Background(), "a/b"); err != nil {
+		t.Fatal(err)
+	}
+	if links, err := IndexGitlinks(context.Background(), dir); err != nil || len(links) != 0 {
+		t.Fatalf("gitlinks after untrack: %v %v", links, err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if links, err := IndexGitlinks(context.Background(), dir); err != nil || len(links) != 1 || links[0] != "a/b" {
+		t.Fatalf("gitlinks after rollback: %v %v", links, err)
+	}
+	if err := tx.Untrack(context.Background(), "../outside"); err == nil {
+		t.Fatal("accepted a path outside the repository")
+	}
+}
+
 func TestListSubmodulesRejectsIncludeDirectives(t *testing.T) {
 	dir := newRepo(t)
 	for _, content := range []string{

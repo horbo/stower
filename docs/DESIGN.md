@@ -84,8 +84,9 @@ internal/dotfiles/
   exec.go                   transactional execution: move journal, rollback, event stream
   validate.go               staging and plan validation rules
 internal/stow/runner.go     stow subprocess, exit codes, conflict parsing
-internal/doctor/status.go   link health states and fix actions; submodule and phantom
-                            gitlink reports are never automatically fixable
+internal/doctor/status.go   link health states and fix actions; submodule reports are never
+                            automatically fixable
+internal/doctor/gitlink.go  phantom gitlink repair: per-link choices, one Git transaction
 internal/gitx/git.go        IsRepo, Init, DirtyPaths, AddAndCommit
 internal/tui/
   app.go                    root model: focus, popup, key dispatch, data refresh
@@ -186,7 +187,9 @@ not hardened (`GIT_*` variables are inherited, `protocol.ext.allow=never` is not
 
 A gitlink recorded in the index without a matching `.gitmodules` entry ("phantom gitlink")
 makes Git blind to everything under that path. Such a path blocks conversion, blocks any
-destination under or above it, and is reported by the doctor as a non-fixable issue. No fetch,
+destination under or above it, and is reported by the doctor as `invisible` on the package
+row. `f` on that row repairs the links inside the package (see Doctor); a link at or above
+the package directory stays report only. No fetch,
 push, clone or automatic commit runs during conversion. Local staged, unstaged, untracked
 and ignored files are preserved; the superproject records only the repository's HEAD.
 Worktrees, shared/external Git metadata and repositories containing other repositories or
@@ -231,6 +234,7 @@ Each link point of each package has one state:
 | foreign      | symlink pointing somewhere else; the detail shows the readlink text and marks a dangling link | report only               |
 | unowned      | symlink resolves to the right package entry but not in stow's relative form | relink: move the link into a `.stower-backup-*` directory inside dotfiles, restow, delete the backup |
 | unnormalized | top-level package entry starts with `.` instead of `dot-` | rename like `update.sh` does, skipped when the destination exists |
+| invisible    | the Git index has a gitlink inside the package without a `.gitmodules` entry | Git links popup, one choice per link: `Convert to submodule` (default for a standalone repository with a valid `origin`), `Remove .git` (track the files), `Remove Git link` (default when the directory is missing or has no `.git`), `Keep` |
 
 Detecting a replaced **directory** is a heuristic, because nothing records whether stow folded
 it: a real directory in the target is `replaced` only when no correct link exists anywhere below
@@ -255,6 +259,14 @@ it. `dotfiles.Linked` therefore requires both checks: `ResolvesTo` (inode) and `
 (stow's textual rule). Everything else is a conflict, which also blocks restore plans on the
 affected entries. `ManagedBy` stays inode-based: it answers which package owns a path in the
 Home panel, not whether stow will accept the link.
+
+Repairing `invisible` never runs stow and never fetches. It re-reads the phantom links,
+rejects actions no longer available, checks the dotfiles Git metadata while ignoring the
+known phantom links, then in one submodule transaction runs `git rm --cached` for every
+selected link and `git submodule add` + `absorbgitdirs` for conversions. Any failure or
+cancellation restores the index, config and `.gitmodules`. `.git` directories chosen for
+removal are deleted only after the transaction closes. The commit offer includes
+`.gitmodules` when a link was converted.
 
 Problems appear in the Issues panel; the full per-package table appears in the Package main
 context. `R` restows every package, which is the exact equivalent of `update.sh`.

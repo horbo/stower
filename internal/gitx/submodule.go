@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -212,6 +213,10 @@ func validateSubmoduleHost(host string) error {
 }
 
 func CheckSubmoduleMetadata(ctx context.Context, dir string) error {
+	return CheckSubmoduleMetadataExcept(ctx, dir, nil)
+}
+
+func CheckSubmoduleMetadataExcept(ctx context.Context, dir string, phantoms []string) error {
 	if !IsRepo(dir) {
 		return errors.New("dotfiles must be the root of a Git repository")
 	}
@@ -247,13 +252,13 @@ func CheckSubmoduleMetadata(ctx context.Context, dir string) error {
 	if out != "" {
 		return errors.New("commit existing .gitmodules first")
 	}
-	if err := checkPhantomGitlinks(ctx, dir); err != nil {
+	if err := checkPhantomGitlinks(ctx, dir, phantoms); err != nil {
 		return err
 	}
 	return checkStagedModules(ctx, dir)
 }
 
-func checkPhantomGitlinks(ctx context.Context, dir string) error {
+func checkPhantomGitlinks(ctx context.Context, dir string, skip []string) error {
 	links, err := IndexGitlinks(ctx, dir)
 	if err != nil {
 		return err
@@ -266,7 +271,7 @@ func checkPhantomGitlinks(ctx context.Context, dir string) error {
 		return err
 	}
 	for _, link := range links {
-		registered := false
+		registered := slices.Contains(skip, link)
 		for _, m := range modules {
 			if filepath.ToSlash(m.Path) == link {
 				registered = true
@@ -621,6 +626,14 @@ func (t *SubmoduleTransaction) Register(ctx context.Context, rel, url, head stri
 		return err
 	}
 	_, err = runMutation(ctx, t.dir, "submodule", "absorbgitdirs", "--", filepath.ToSlash(rel))
+	return err
+}
+
+func (t *SubmoduleTransaction) Untrack(ctx context.Context, rel string) error {
+	if err := safeRelative(rel); err != nil {
+		return err
+	}
+	_, err := runMutation(ctx, t.dir, "rm", "--cached", "-q", "--", ":(literal)"+filepath.ToSlash(rel))
 	return err
 }
 

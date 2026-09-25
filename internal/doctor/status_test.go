@@ -819,8 +819,8 @@ func TestPhantomGitlinkIsReported(t *testing.T) {
 		"160000,"+sha+",tool/dot-config/nested")
 
 	issue := issueFor(t, paths, "tool", Invisible)
-	if issue.Fixable {
-		t.Fatal("the phantom Git link was reported as fixable")
+	if !issue.Fixable || len(issue.Gitlinks) != 1 || issue.Gitlinks[0] != "tool/dot-config/nested" {
+		t.Fatalf("issue: %+v", issue)
 	}
 	if !strings.Contains(issue.Detail, "tool/dot-config/nested") ||
 		!strings.Contains(issue.Detail, "invisible to Git") {

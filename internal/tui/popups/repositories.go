@@ -41,6 +41,7 @@ func defaultRepositoriesKeyMap() repositoriesKeyMap {
 const repositoryRowHeight = 2
 
 type Repositories struct {
+	title         string
 	rows          []dotfiles.NestedRepository
 	cursor        int
 	width, height int
@@ -61,6 +62,11 @@ func NewRepositories(st styles.Styles) *Repositories {
 }
 
 func (p *Repositories) Open(rows []dotfiles.NestedRepository) {
+	p.OpenTitled("Git repositories", rows)
+}
+
+func (p *Repositories) OpenTitled(title string, rows []dotfiles.NestedRepository) {
+	p.title = title
 	p.rows = append([]dotfiles.NestedRepository(nil), rows...)
 	p.cursor = 0
 	p.editing = false
@@ -80,7 +86,7 @@ func (p *Repositories) SetSize(w, h int) {
 }
 
 func (p *Repositories) Title() string {
-	return "Git repositories"
+	return p.title
 }
 
 func (p *Repositories) Keys() []key.Binding {
@@ -240,6 +246,8 @@ func (p *Repositories) detailLines(inner int) []string {
 		switch r.Choice.Action {
 		case dotfiles.KeepRepository:
 			lines = append(lines, components.Truncate("Keep .git and repository history unchanged.", inner))
+		case dotfiles.RemoveGitlink:
+			lines = append(lines, components.Truncate("Drop the Git link from the index; files here become regular files.", inner))
 		case dotfiles.RemoveRepositoryGit:
 			lines = append(lines, p.st.Warn.Render(components.Truncate("Delete .git after Apply; Restore cannot recover its history.", inner)))
 		case dotfiles.ConvertRepository:

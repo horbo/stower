@@ -18,6 +18,7 @@ const (
 	KeepRepository RepositoryAction = iota
 	RemoveRepositoryGit
 	ConvertRepository
+	RemoveGitlink
 )
 
 func (a RepositoryAction) String() string {
@@ -26,6 +27,8 @@ func (a RepositoryAction) String() string {
 		return "Remove .git"
 	case ConvertRepository:
 		return "Convert to submodule"
+	case RemoveGitlink:
+		return "Remove Git link"
 	default:
 		return "Keep repository"
 	}
@@ -42,10 +45,15 @@ type NestedRepository struct {
 	Info        gitx.Repository
 	Choice      RepositoryChoice
 	Conflict    string
+	Gitlink     bool
+	NoGit       bool
 }
 
 func (r NestedRepository) AllowedActions() []RepositoryAction {
 	actions := []RepositoryAction{KeepRepository}
+	if r.Gitlink && r.NoGit {
+		actions = append(actions, RemoveGitlink)
+	}
 	if r.Info.GitDir != "" {
 		actions = append(actions, RemoveRepositoryGit)
 	}
