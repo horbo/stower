@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/horbo/stower/internal/config"
@@ -24,6 +25,7 @@ const (
 	Unnormalized State = "unnormalized"
 	Unowned      State = "unowned"
 	Invisible    State = "invisible"
+	Orphaned     State = "orphaned"
 )
 
 type Issue struct {
@@ -33,13 +35,14 @@ type Issue struct {
 	Detail   string
 	Fixable  bool
 	Gitlinks []string
+	Modules  []string
 }
 
 func (i Issue) Glyph() string {
 	switch i.State {
 	case OK:
 		return "✔"
-	case Unnormalized, Foreign:
+	case Unnormalized, Foreign, Orphaned:
 		return "⚠"
 	default:
 		return "✘"
@@ -57,12 +60,12 @@ func Inspect(paths config.Paths) ([]Issue, []PackageReport, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	links, linkErr := phantomGitlinks(paths)
+	git, linkErr := inspectGitMetadata(paths)
 	var issues []Issue
 	var reports []PackageReport
 	var errs []error
 	for _, name := range names {
-		report := inspectPackage(paths, name, links, linkErr)
+		report := inspectPackage(paths, name, git, linkErr)
 		reports = append(reports, report)
 		if report.Err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", name, report.Err))
@@ -77,11 +80,11 @@ func Inspect(paths config.Paths) ([]Issue, []PackageReport, error) {
 }
 
 func InspectPackage(paths config.Paths, pkg string) PackageReport {
-	links, err := phantomGitlinks(paths)
-	return inspectPackage(paths, pkg, links, err)
+	git, err := inspectGitMetadata(paths)
+	return inspectPackage(paths, pkg, git, err)
 }
 
-func inspectPackage(paths config.Paths, pkg string, links []string, linkErr error) PackageReport {
+func inspectPackage(paths config.Paths, pkg string, git gitMetadata, linkErr error) PackageReport {
 	report := PackageReport{Package: pkg}
 	if linkErr != nil {
 		report.Err = linkErr
@@ -97,7 +100,10 @@ func inspectPackage(paths config.Paths, pkg string, links []string, linkErr erro
 		report.Err = err
 		return report
 	}
-	if issue := phantomGitlinkIssue(pkg, links); issue != nil {
+	if issue := phantomGitlinkIssue(pkg, git.phantoms); issue != nil {
+		report.Entries = append(report.Entries, *issue)
+	}
+	if issue := orphanedSubmoduleIssue(pkg, git.orphans); issue != nil {
 		report.Entries = append(report.Entries, *issue)
 	}
 	states := map[string]dotfiles.State{}
@@ -216,20 +222,35 @@ func inspectPackage(paths config.Paths, pkg string, links []string, linkErr erro
 	return report
 }
 
+type gitMetadata struct {
+	phantoms []string
+	orphans  []gitx.Submodule
+}
+
 func phantomGitlinks(paths config.Paths) ([]string, error) {
+	git, err := inspectGitMetadata(paths)
+	return git.phantoms, err
+}
+
+func orphanedSubmodules(paths config.Paths) ([]gitx.Submodule, error) {
+	git, err := inspectGitMetadata(paths)
+	return git.orphans, err
+}
+
+func inspectGitMetadata(paths config.Paths) (gitMetadata, error) {
+	var git gitMetadata
 	if info, err := os.Lstat(filepath.Join(paths.Dotfiles, ".git")); err != nil || !info.IsDir() {
-		return nil, nil
+		return git, nil
 	}
 	ctx := context.Background()
 	links, err := gitx.IndexGitlinks(ctx, paths.Dotfiles)
-	if err != nil || len(links) == 0 {
-		return nil, err
+	if err != nil {
+		return git, err
 	}
 	modules, err := gitx.ListSubmodules(ctx, paths.Dotfiles)
 	if err != nil {
-		return nil, err
+		return git, err
 	}
-	var phantom []string
 	for _, link := range links {
 		registered := false
 		for _, m := range modules {
@@ -238,10 +259,40 @@ func phantomGitlinks(paths config.Paths) ([]string, error) {
 			}
 		}
 		if !registered {
-			phantom = append(phantom, link)
+			git.phantoms = append(git.phantoms, link)
 		}
 	}
-	return phantom, nil
+	for _, m := range modules {
+		if !slices.Contains(links, filepath.ToSlash(m.Path)) {
+			git.orphans = append(git.orphans, m)
+		}
+	}
+	return git, nil
+}
+
+func orphanedSubmoduleIssue(pkg string, orphans []gitx.Submodule) *Issue {
+	var covered []string
+	for _, m := range orphans {
+		path := filepath.ToSlash(m.Path)
+		if path == pkg || strings.HasPrefix(path, pkg+"/") {
+			covered = append(covered, path)
+		}
+	}
+	if len(covered) == 0 {
+		return nil
+	}
+	detail := strings.Join(covered, ", ") + " has a .gitmodules entry but no Git link; the entry is stale"
+	if len(covered) > 1 {
+		detail = strings.Join(covered, ", ") + " have .gitmodules entries but no Git links; the entries are stale"
+	}
+	return &Issue{
+		Package: pkg,
+		Entry:   dotfiles.Entry{PkgRel: "", TargetRel: "", IsDir: true},
+		State:   Orphaned,
+		Detail:  detail,
+		Fixable: true,
+		Modules: covered,
+	}
 }
 
 func phantomGitlinkIssue(pkg string, links []string) *Issue {
@@ -311,7 +362,7 @@ func BuildEntryRestorePlan(paths config.Paths, pkg string, pkgRels []string) dot
 		return plan
 	}
 	for _, issue := range report.Entries {
-		if issue.State == OK || issue.State == Missing {
+		if issue.State == OK || issue.State == Missing || issue.State == Orphaned {
 			continue
 		}
 		found := false

@@ -87,6 +87,7 @@ internal/stow/runner.go     stow subprocess, exit codes, conflict parsing
 internal/doctor/status.go   link health states and fix actions; submodule reports are never
                             automatically fixable
 internal/doctor/gitlink.go  phantom gitlink repair: per-link choices, one Git transaction
+internal/doctor/orphan.go   stale .gitmodules entry removal, one Git transaction
 internal/gitx/git.go        IsRepo, Init, DirtyPaths, AddAndCommit
 internal/tui/
   app.go                    root model: focus, popup, key dispatch, data refresh
@@ -235,6 +236,7 @@ Each link point of each package has one state:
 | unowned      | symlink resolves to the right package entry but not in stow's relative form | relink: move the link into a `.stower-backup-*` directory inside dotfiles, restow, delete the backup |
 | unnormalized | top-level package entry starts with `.` instead of `dot-` | rename like `update.sh` does, skipped when the destination exists |
 | invisible    | the Git index has a gitlink inside the package without a `.gitmodules` entry | Git links popup, one choice per link: `Convert to submodule` (default for a standalone repository with a valid `origin`), `Remove .git` (track the files), `Remove Git link` (default when the directory is missing or has no `.git`), `Keep` |
+| orphaned     | `.gitmodules` has an entry inside the package without a gitlink in the index | remove every such entry of the package from `.gitmodules` and `.git/config` |
 
 Detecting a replaced **directory** is a heuristic, because nothing records whether stow folded
 it: a real directory in the target is `replaced` only when no correct link exists anywhere below
@@ -267,6 +269,14 @@ selected link and `git submodule add` + `absorbgitdirs` for conversions. Any fai
 cancellation restores the index, config and `.gitmodules`. `.git` directories chosen for
 removal are deleted only after the transaction closes. The commit offer includes
 `.gitmodules` when a link was converted.
+
+Repairing `orphaned` touches only Git metadata: it re-reads the stale entries, requires
+`.gitmodules` without unstaged or untracked changes, then in one submodule transaction removes
+each entry from `.gitmodules` and `.git/config`, deletes `.gitmodules` when it becomes empty,
+and stages it. Files under the entry path and `.git/modules/<name>` are left untouched. The
+commit offer includes `.gitmodules`. `orphaned` does not block Restore by itself: an entry
+whose path is missing is skipped, while an entry over an existing directory still blocks
+Restore of that directory.
 
 Problems appear in the Issues panel; the full per-package table appears in the Package main
 context. `R` restows every package, which is the exact equivalent of `update.sh`.

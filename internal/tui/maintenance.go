@@ -127,7 +127,14 @@ func (m *Model) openFix() tea.Cmd {
 			return gitlinksLoadedMsg{issue: issue, rows: rows, err: err}
 		}
 	}
-	if issue.State == doctor.Replaced {
+	if issue.State == doctor.Orphaned {
+		body := []string{"Remove .gitmodules entries without a Git link?"}
+		for _, path := range issue.Modules {
+			body = append(body, "  "+path)
+		}
+		m.confirmPopup.Open(actionFix, "Fix orphaned "+issue.Package, body, "skip the commit; git reset restores the index")
+		m.popup = popupConfirm
+	} else if issue.State == doctor.Replaced {
 		m.fixPopup.Open(issue)
 		m.popup = popupFix
 	} else {
@@ -237,6 +244,11 @@ func (m *Model) startConfirmed(action string) tea.Cmd {
 			choices := m.gitlinkChoices
 			return m.beginOperation("fix", dotfiles.AdoptPlan{}, func(ctx context.Context, events chan<- dotfiles.Event) dotfiles.Summary {
 				return doctor.RepairGitlinks(ctx, paths, issue.Package, choices, events)
+			})
+		}
+		if issue.State == doctor.Orphaned {
+			return m.beginOperation("fix", dotfiles.AdoptPlan{}, func(ctx context.Context, events chan<- dotfiles.Event) dotfiles.Summary {
+				return doctor.RemoveOrphanedSubmodules(ctx, paths, issue.Package, events)
 			})
 		}
 		return m.beginOperation("fix", dotfiles.AdoptPlan{}, func(ctx context.Context, events chan<- dotfiles.Event) dotfiles.Summary {

@@ -217,6 +217,16 @@ func CheckSubmoduleMetadata(ctx context.Context, dir string) error {
 }
 
 func CheckSubmoduleMetadataExcept(ctx context.Context, dir string, phantoms []string) error {
+	if err := CheckGitmodulesClean(ctx, dir); err != nil {
+		return err
+	}
+	if err := checkPhantomGitlinks(ctx, dir, phantoms); err != nil {
+		return err
+	}
+	return checkStagedModules(ctx, dir)
+}
+
+func CheckGitmodulesClean(ctx context.Context, dir string) error {
 	if !IsRepo(dir) {
 		return errors.New("dotfiles must be the root of a Git repository")
 	}
@@ -252,10 +262,7 @@ func CheckSubmoduleMetadataExcept(ctx context.Context, dir string, phantoms []st
 	if out != "" {
 		return errors.New("commit existing .gitmodules first")
 	}
-	if err := checkPhantomGitlinks(ctx, dir, phantoms); err != nil {
-		return err
-	}
-	return checkStagedModules(ctx, dir)
+	return nil
 }
 
 func checkPhantomGitlinks(ctx context.Context, dir string, skip []string) error {
@@ -690,11 +697,18 @@ func (t *SubmoduleTransaction) Detach(ctx context.Context, m Submodule) error {
 	if _, err = runMutation(ctx, t.dir, "update-index", "--force-remove", "--", filepath.ToSlash(m.Path)); err != nil {
 		return err
 	}
-	if _, err = runMutation(ctx, t.dir, "config", "--file", filepath.Join(t.dir, ".gitmodules"), "--remove-section", "submodule."+m.Name); err != nil {
+	return t.Unregister(ctx, m)
+}
+
+func (t *SubmoduleTransaction) Unregister(ctx context.Context, m Submodule) error {
+	if err := safeRelative(m.Name); err != nil {
+		return err
+	}
+	if _, err := runMutation(ctx, t.dir, "config", "--file", filepath.Join(t.dir, ".gitmodules"), "--remove-section", "submodule."+m.Name); err != nil {
 		return err
 	}
 	if out, _ := runContext(ctx, t.dir, "config", "--get-regexp", `^submodule\.`); strings.Contains(out, "submodule."+m.Name+".") {
-		if _, err = runMutation(ctx, t.dir, "config", "--remove-section", "submodule."+m.Name); err != nil {
+		if _, err := runMutation(ctx, t.dir, "config", "--remove-section", "submodule."+m.Name); err != nil {
 			return err
 		}
 	}
