@@ -187,6 +187,9 @@ func planRestoreRepositories(plan *RestorePlan) {
 	}
 	for _, m := range modules {
 		root := filepath.Join(plan.Paths.Dotfiles, m.Path)
+		if _, err := os.Lstat(root); errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
 		covered, split := false, false
 		for _, move := range plan.Moves {
 			if move.From == root || isInside(move.From, root) {

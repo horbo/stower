@@ -300,6 +300,30 @@ func TestSubmoduleRestoreUnfolded(t *testing.T) {
 	}
 }
 
+func TestRestoreIgnoresStaleGitmodulesEntry(t *testing.T) {
+	paths, _ := setupSubmodule(t)
+	writeFile(t, filepath.Join(paths.Dotfiles, "shell", "dot-plugins", "keep"), "keep\n")
+	repoCommand(t, paths.Dotfiles, "config", "--file", ".gitmodules", "submodule.gone.path", "shell/dot-plugins/gone")
+	repoCommand(t, paths.Dotfiles, "config", "--file", ".gitmodules", "submodule.gone.url", "https://example.invalid/gone.git")
+	runner := newRunner(paths)
+	if result := runner.Restow("shell"); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	restore := BuildRestorePlan(paths, "shell")
+	if !restore.Runnable() {
+		t.Fatalf("restore: %+v", restore)
+	}
+	if len(restore.Submodules) != 0 {
+		t.Fatalf("stale entry planned: %+v", restore.Submodules)
+	}
+	if summary := ExecuteRestore(context.Background(), restore, runner, nil); !summary.OK() {
+		t.Fatal(summary.Err())
+	}
+	if got := readFile(t, filepath.Join(paths.Target, ".plugins", "keep")); got != "keep\n" {
+		t.Fatal(got)
+	}
+}
+
 func TestSubmoduleRestoreAfterClone(t *testing.T) {
 	paths, source := setupSubmodule(t)
 	remote := filepath.Join(t.TempDir(), "remote.git")
