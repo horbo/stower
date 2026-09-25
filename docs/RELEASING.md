@@ -1,13 +1,14 @@
 # Releasing
 
-A release is published by pushing a `v*` tag. GitHub Actions runs goreleaser, which builds
+A release is published by a `v*` tag, either pushed by hand or created by the manual run of
+the release workflow. GitHub Actions runs goreleaser, which builds
 the binaries, creates the GitHub Release and updates the formula in the Homebrew tap so that
 `brew install horbo/tap/stower` serves the new version.
 
 Everything is driven by two files:
 
 - `.goreleaser.yaml` — builds, archives, checksums, changelog, the `brews` entry.
-- `.github/workflows/release.yml` — the tag-triggered workflow.
+- `.github/workflows/release.yml` — the workflow, triggered by a pushed tag or run by hand.
 
 ## One-time setup
 
@@ -25,6 +26,17 @@ Everything is driven by two files:
 `permissions: contents: write` lets it create the release on `horbo/stower`.
 
 ## Release procedure
+
+### From GitHub
+
+Actions → release → Run workflow, branch `main`, enter the version, for example `v0.5.0`.
+The `tag` job refuses anything but `main`, a version that is not semver with a leading `v`,
+or a tag that already exists. It then runs `make check` with stow from Homebrew, creates the
+annotated tag on the current `main` as `github-actions[bot]`, pushes it, and the `goreleaser`
+job builds from that tag. A tag pushed with the automatic token does not start another
+workflow run, so there is exactly one release run.
+
+### From a terminal
 
 ```sh
 make check

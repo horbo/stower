@@ -540,7 +540,8 @@ the value is split quote-aware and never run through a shell.
 
 ## Release
 
-Distribution (M10): a `v*` tag drives goreleaser from GitHub Actions, which builds darwin and
+Distribution (M10): a `v*` tag, pushed by hand or created by the manually run release
+workflow after `make check`, drives goreleaser from GitHub Actions, which builds darwin and
 linux binaries for amd64 and arm64, publishes the GitHub Release and updates the formula in
 the tap `horbo/homebrew-tap`, so `brew install horbo/tap/stower` works. The maintainer
 procedure, the one-time token setup and the recovery steps are in `docs/RELEASING.md`.
